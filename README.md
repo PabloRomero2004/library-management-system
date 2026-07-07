@@ -1,21 +1,30 @@
 # library-management-system
 Sistema de gestión de una biblioteca.
 
-Entidades
-- Usuario
-- Libro
-- Autor
-- Préstamo
-- Reserva
-- Multa
+Entities
+- User
+- Book
+- Author
+- Loan
+- Hold
+- Fine
 
-Reglas de negocio
-- Un usuario puede tener como máximo 5 préstamos activos.
-- No se puede prestar un libro ya prestado.
-- Una reserva solo puede hacerse si el libro no está disponible.
-- Una devolución fuera de plazo genera una multa.
-- Si existe una reserva, el siguiente préstamo debe ser para el primer usuario de la cola.
-- Los usuarios con multas pendientes no pueden pedir nuevos libros.
-- Un libro puede quedar marcado como perdido.
-- Si un libro está perdido no puede prestarse.
-- Los administradores pueden eliminar libros solo si no tienen préstamos activos.
+Business Rules
+
+- A user can have a maximum of 5 active loans.
+
+- A book that is already checked out cannot be checked out again.
+
+- A hold can only be placed if the book is unavailable.
+
+- A late return incurs a fine.
+
+- If there is a hold, the next loan must be for the first user in the queue.
+
+- Users with outstanding fines cannot request new books.
+
+- A book can be marked as lost.
+
+- If a book is lost, it cannot be checked out again.
+
+- Administrators can only delete books if they have no active loans.
