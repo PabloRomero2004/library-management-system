@@ -109,17 +109,5 @@ public class Book {
         return Objects.hash(id, isbn);
     }
 
-    @Override
-    public String toString() {
-        return "Book{" +
-                "id=" + id +
-                ", title='" + title + '\'' +
-                ", isbn='" + isbn + '\'' +
-                ", author=" + author +
-                ", genre='" + genre + '\'' +
-                ", publicationDate=" + publicationDate +
-                ", available=" + available +
-                ", lost=" + lost +
-                '}';
-    }
+   
 }
