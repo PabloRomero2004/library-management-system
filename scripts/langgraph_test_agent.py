@@ -70,25 +70,63 @@ def read_file(path: Path) -> str:
 def find_test_file(repo_path: str, source_file: str) -> Path | None:
     """
     Busca el archivo de test asociado al archivo modificado.
+    Busca solo bajo src/test y con el patrón exacto <nombre>Test.*.
     """
 
     repo = Path(repo_path)
+    test_root = repo / "src" / "test"
+    if not test_root.exists():
+        return None
 
-    stem = Path(source_file).stem
+    file_name = Path(source_file).stem
+    expected_name = f"{file_name}Test"
 
-    candidates = list(repo.rglob(f"*{stem}*Test.*"))
-    candidates += list(repo.rglob(f"test_{stem}.*"))
-    candidates += list(repo.rglob(f"{stem}_test.*"))
-
+    candidates = list(test_root.rglob(f"{expected_name}.*"))
     return candidates[0] if candidates else None
 
 
 def get_dependencies(repo_path: str, file_name: str) -> list[str]:
     """
-    TODO:
-    Implementar usando AST, tree-sitter o similar.
+    Intenta encontrar nombres de archivos dependientes para un archivo dado.
+    Implementación simple basada en referencias a tipos y otros archivos del repo.
     """
-    return []
+    repo = Path(repo_path)
+    target_path = repo / file_name
+
+    if not target_path.exists():
+        return []
+
+    content = read_file(target_path)
+    candidates: list[str] = []
+
+    # 1) Buscar referencias a nombres de archivo con extensión evidentes
+    for token in content.split():
+        base_name = Path(token).name
+        if base_name.endswith((".java", ".kt", ".py", ".xml", ".json", ".yml", ".yaml", ".txt")):
+            candidate_path = repo / base_name
+            if candidate_path.exists():
+                candidates.append(base_name)
+
+    # 2) Buscar tipos Java usados en el archivo (ej. Author, User, Book)
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("package") or line.startswith("import") or line.startswith("public"):
+            continue
+        for token in line.replace("{", " ").replace("(", " ").replace(")", " ").replace(";", " ").split():
+            if not token:
+                continue
+            if token in {"private", "protected", "public", "final", "static", "return", "new", "this", "super"}:
+                continue
+            if token.startswith("//"):
+                break
+            if token.endswith((";", ",", "{", "}", "(", ")")):
+                token = token.rstrip(";{},()")
+            if token and token[0].isupper() and token[0:2] != "//":
+                candidate_path = repo / "src" / "main" / "model" / f"{token}.java"
+                if candidate_path.exists():
+                    candidates.append(str(candidate_path.relative_to(repo)).replace("\\", "/"))
+
+    return sorted(set(candidates))
 
 
 def get_context(state: TestAgentState) -> TestAgentState:
@@ -118,6 +156,8 @@ def get_context(state: TestAgentState) -> TestAgentState:
         "--name-only",
         "HEAD~1",
         "HEAD",
+        "--",
+        "src/main",
     ).splitlines()
 
     for file_name in modified_files:
