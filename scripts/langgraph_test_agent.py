@@ -25,10 +25,13 @@ class ModifiedFile(TypedDict):
     test_file_name: str | None
     test_file_content: str | None
 
-class TestAgentState(TypedDict):
+class TestAgentState(TypedDict, total=False):
     repo_path: str
     readme_content: str
     modified_files: list[ModifiedFile]
+    modified_files_count: int
+    current_file_ind: int
+    context: str
 
 
 def git(repo_path: str, *args: str) -> str:
@@ -134,6 +137,10 @@ def get_context(state: TestAgentState) -> TestAgentState:
     repo = Path(state["repo_path"])
 
     state["modified_files"] = []
+    state["readme_content"] = ""
+    state["modified_files_count"] = 0
+    state["current_file_ind"] = 0
+    state["context"] = ""
 
     #
     # README
@@ -242,6 +249,87 @@ def get_context(state: TestAgentState) -> TestAgentState:
             }
         )
 
+    state["modified_files_count"] = len(state["modified_files"])
+    state["current_file_ind"] = 0
+
+    return state
+
+
+def send_context(state: TestAgentState) -> TestAgentState:
+    """
+    Prepara el contexto en inglés para el fichero modificado actual.
+    """
+
+    modified_files = state.get("modified_files", [])
+    current_file_ind = int(state.get("current_file_ind", 0))
+    modified_files_count = int(state.get("modified_files_count", len(modified_files)))
+
+    if not modified_files:
+        state["context"] = "No modified files were found in the repository."
+        return state
+
+    if current_file_ind >= modified_files_count:
+        state["context"] = "All modified files have already been processed."
+        return state
+
+    modified_file = modified_files[current_file_ind]
+    modified_file_name = modified_file.get("modified_file_name", "<unknown>")
+    modified_file_content = modified_file.get("modified_file_content", "")
+    modified_file_changes = modified_file.get("modified_file_changes", "")
+    dependencies = modified_file.get("dependencies", [])
+    test_file_name = modified_file.get("test_file_name")
+    test_file_content = modified_file.get("test_file_content")
+
+    dependency_lines = []
+    if dependencies:
+        for dependency in dependencies:
+            dependency_name = dependency.get("file_name", "<unknown>")
+            dependency_lines.append(f"- {dependency_name}")
+    else:
+        dependency_lines.append("- No dependencies found.")
+
+    if test_file_name:
+        test_name_text = test_file_name
+    else:
+        test_name_text = "No test file found."
+
+    if test_file_content and test_file_content.strip():
+        test_content_text = test_file_content
+    else:
+        test_content_text = "No test file content found."
+
+    context_lines = [
+        "You are an automated test generator for modified files.",
+        "Your job is to inspect the modified file, its changes, its dependencies, and any existing test file, then produce the final content of a test file.",
+        "Return only the final content of a test file, including imports and package declarations, and nothing else.",
+        "",
+        "Modified file name:",
+        modified_file_name,
+        "",
+        "Modified file content:",
+        modified_file_content or "<empty file>",
+        "",
+        "Changes for this file:",
+        modified_file_changes or "No changes detected.",
+        "",
+        "Dependencies:",
+        *dependency_lines,
+        "",
+        "Associated test file name:",
+        test_name_text,
+        "",
+        "Associated test file content:",
+        test_content_text,
+        "",
+        "Instructions:",
+        "- If a test file already exists, use its content as a base and add the new tests required to validate the recent code changes.",
+        "- If no test file exists, create a complete test file content that covers the new changes.",
+        "- The final result must be only a test file content (with imports and package declarations included) and no extra commentary.",
+    ]
+
+    state["context"] = "\n".join(context_lines)
+    state["current_file_ind"] = current_file_ind + 1
+
     return state
 
 
@@ -268,10 +356,11 @@ def print_context_summary(result: dict) -> None:
 
 workflow = StateGraph(TestAgentState)
 workflow.add_node("get_context", get_context)
-
+workflow.add_node("send_context", send_context)
 
 workflow.add_edge(START, "get_context")
-workflow.add_edge("get_context", END)
+workflow.add_edge("get_context", "send_context")
+workflow.add_edge("send_context", END)
 
 app = workflow.compile()
 
