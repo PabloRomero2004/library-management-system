@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="model.UserTest" time="0.101" tests="12" errors="0" skipped="0" failures="0">
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="model.BookTest" time="0.273" tests="21" errors="0" skipped="0" failures="0">
   <properties>
     <property name="java.specification.version" value="17"/>
     <property name="sun.cpu.isalist" value="amd64"/>
@@ -56,16 +56,25 @@
     <property name="sun.io.unicode.encoding" value="UnicodeLittle"/>
     <property name="java.class.version" value="61.0"/>
   </properties>
-  <testcase name="shouldReturnOnlyFirstNameWhenLastNameIsEmpty" classname="model.UserTest" time="0.004"/>
-  <testcase name="shouldNotBeEqualWhenEmailIsDifferent" classname="model.UserTest" time="0.013"/>
-  <testcase name="shouldCreateUserWithAllArgumentsConstructor" classname="model.UserTest" time="0.0"/>
-  <testcase name="shouldBeEqualWhenIdAndEmailAreEqual" classname="model.UserTest" time="0.0"/>
-  <testcase name="shouldContainImportantFieldsInToString" classname="model.UserTest" time="0.043"/>
-  <testcase name="shouldReturnFullName" classname="model.UserTest" time="0.002"/>
-  <testcase name="shouldCreateUserWithDefaultConstructor" classname="model.UserTest" time="0.002"/>
-  <testcase name="shouldNotBeEqualToNull" classname="model.UserTest" time="0.002"/>
-  <testcase name="shouldHaveSameHashCodeWhenObjectsAreEqual" classname="model.UserTest" time="0.0"/>
-  <testcase name="shouldSetAndGetAllFields" classname="model.UserTest" time="0.0"/>
-  <testcase name="shouldNotBeEqualWhenIdIsDifferent" classname="model.UserTest" time="0.0"/>
-  <testcase name="shouldNotBeEqualToDifferentClass" classname="model.UserTest" time="0.004"/>
+  <testcase name="testGetAndSetPublicationDate" classname="model.BookTest" time="0.086"/>
+  <testcase name="testEquals_differentId" classname="model.BookTest" time="0.004"/>
+  <testcase name="testHashCode_consistencyWithEquals" classname="model.BookTest" time="0.006"/>
+  <testcase name="testNoArgsConstructor" classname="model.BookTest" time="0.005"/>
+  <testcase name="testEquals_differentClass" classname="model.BookTest" time="0.003"/>
+  <testcase name="testEquals_differentIsbn" classname="model.BookTest" time="0.002"/>
+  <testcase name="testHashCode_differentObjects" classname="model.BookTest" time="0.004"/>
+  <testcase name="testGetAndSetIsbn" classname="model.BookTest" time="0.002"/>
+  <testcase name="testGetAndSetId" classname="model.BookTest" time="0.002"/>
+  <testcase name="testAllArgsConstructor" classname="model.BookTest" time="0.005"/>
+  <testcase name="testEquals_equalObjects" classname="model.BookTest" time="0.005"/>
+  <testcase name="testGetAndSetAuthor" classname="model.BookTest" time="0.002"/>
+  <testcase name="testIsAndSetAvailable" classname="model.BookTest" time="0.012"/>
+  <testcase name="testHashCode_sameIdDifferentIsbn" classname="model.BookTest" time="0.003"/>
+  <testcase name="testGetAndSetGenre" classname="model.BookTest" time="0.002"/>
+  <testcase name="testGetAndSetTitle" classname="model.BookTest" time="0.005"/>
+  <testcase name="testEquals_nullObject" classname="model.BookTest" time="0.002"/>
+  <testcase name="testEquals_differentIdAndIsbn" classname="model.BookTest" time="0.002"/>
+  <testcase name="testEquals_sameObject" classname="model.BookTest" time="0.002"/>
+  <testcase name="testIsAndSetLost" classname="model.BookTest" time="0.002"/>
+  <testcase name="testHashCode_differentIdSameIsbn" classname="model.BookTest" time="0.002"/>
 </testsuite>
