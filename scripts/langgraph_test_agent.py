@@ -47,10 +47,12 @@ class TestAgentState(TypedDict, total=False):
     current_file_ind: int
     context: str
     llm_response: str
+    test_execution_output: str
     written_test_file: str
     validation_errors: list[dict[str, str]]
     ast_parsing_passed: bool
     compiler_passed: bool
+    llm_call_failed: bool
 
 
 def git(repo_path: str, *args: str) -> str:
@@ -97,6 +99,9 @@ def clean_output(state: TestAgentState) -> TestAgentState:
     """Elimina Markdown y texto adicional, dejando solo la región de código Java."""
     response = state.get("llm_response", "") or ""
     state["validation_errors"] = []
+
+    if state.get("llm_call_failed"):
+        return state
 
     if not response.strip():
         record_validation_error(state, "clean_output", "El output está vacío.")
@@ -226,14 +231,12 @@ def _ensure_ast_validator(repo_path: Path) -> Path:
         source_file.write_text(source, encoding="utf-8")
 
     if not class_file.exists() or class_file.stat().st_mtime < source_file.stat().st_mtime:
-        is_windows = os.name == "nt"
         compile_result = subprocess.run(
             ["javac", str(source_file)],
             cwd=str(helper_dir),
             capture_output=True,
             text=True,
             check=False,
-            shell=is_windows,
         )
         if compile_result.returncode != 0:
             raise RuntimeError(
@@ -246,7 +249,6 @@ def _ensure_ast_validator(repo_path: Path) -> Path:
 
 def _run_ast_validator(java_file: Path, repo_path: Path) -> tuple[bool, str]:
     helper_dir = _ensure_ast_validator(repo_path)
-    is_windows = os.name == "nt"
 
     result = subprocess.run(
         ["java", "-cp", str(helper_dir), "LangGraphJavaAstValidator", str(java_file)],
@@ -254,7 +256,6 @@ def _run_ast_validator(java_file: Path, repo_path: Path) -> tuple[bool, str]:
         capture_output=True,
         text=True,
         check=False,
-        shell=is_windows,
     )
     output = result.stdout.strip() or result.stderr.strip()
     if result.returncode == 0 and output.startswith("PASS"):
@@ -366,7 +367,6 @@ def compiler(state: TestAgentState) -> TestAgentState:
             capture_output=True,
             text=True,
             check=False,
-            shell=is_windows,
         )
 
         if result.returncode != 0:
@@ -456,15 +456,15 @@ def _get_ast_dependency_metadata(repo_path: Path, target_path: Path) -> tuple[st
         source_file.write_text(source, encoding="utf-8")
     if not class_file.exists() or class_file.stat().st_mtime < source_file.stat().st_mtime:
         result = subprocess.run(
-            ["javac", str(source_file)], cwd=str(helper_dir), capture_output=True,
-            text=True, check=False, shell=os.name == "nt"
+            ["javac", source_file.name], cwd=str(helper_dir), capture_output=True,
+            text=True, check=False
         )
         if result.returncode != 0:
             raise RuntimeError("No se pudo compilar el parser AST de dependencias: " + result.stderr.strip())
 
     result = subprocess.run(
         ["java", "-cp", str(helper_dir), "LangGraphJavaDependencyParser", str(target_path)],
-        cwd=str(repo_path), capture_output=True, text=True, check=False, shell=os.name == "nt"
+        cwd=str(repo_path), capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "El parser AST no pudo analizar el archivo.")
@@ -529,7 +529,7 @@ def _get_ast_imports(repo_path: Path, target_path: Path) -> list[str]:
     helper_dir = repo_path / "validator" / ".langgraph_dependency_parser"
     result = subprocess.run(
         ["java", "-cp", str(helper_dir), "LangGraphJavaDependencyParser", str(target_path)],
-        cwd=str(repo_path), capture_output=True, text=True, check=False, shell=os.name == "nt"
+        cwd=str(repo_path), capture_output=True, text=True, check=False
     )
     return [line.removeprefix("IMPORT:").strip() for line in result.stdout.splitlines() if line.startswith("IMPORT:")]
 
@@ -751,15 +751,18 @@ def load_api_key() -> str:
 
 def llm_call(state: TestAgentState) -> TestAgentState:
     """Invoca al modelo Gemini con la variable de estado context como prompt."""
+    state["llm_call_failed"] = False
     prompt = state.get("context", "") or ""
     if not prompt.strip():
         state["llm_response"] = "No hay contexto disponible para enviar al modelo."
+        state["llm_call_failed"] = True
         return state
 
     try:
         api_key = load_api_key()
     except Exception as exc:
         state["llm_response"] = f"Error al cargar la API key: {exc}"
+        state["llm_call_failed"] = True
         return state
 
     try:
@@ -775,6 +778,7 @@ def llm_call(state: TestAgentState) -> TestAgentState:
 
     except Exception as exc:
         state["llm_response"] = f"Error al llamar a LangChain: {exc}"
+        state["llm_call_failed"] = True
 
     return state
 
@@ -831,7 +835,7 @@ def write_test_file(state: TestAgentState) -> TestAgentState:
 def execute_test_files(state: TestAgentState) -> TestAgentState:
     """
     Ejecuta las pruebas unitarias del proyecto mediante Maven (mvn test)
-    y almacena la salida del proceso en la respuesta del LLM para el reporte.
+    y almacena la salida del proceso separada de la respuesta del LLM.
     """
     print("\n=== Ejecutando pruebas unitarias con Maven ===")
     repo_path = state.get("repo_path", ".")
@@ -850,7 +854,7 @@ def execute_test_files(state: TestAgentState) -> TestAgentState:
     
     # Consolidamos la salida estándar y la de error para el reporte del agente
     output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-    state["llm_response"] = f"Maven Execution Return Code: {result.returncode}\n\n{output}"
+    state["test_execution_output"] = f"Maven Execution Return Code: {result.returncode}\n\n{output}"
     return state
 
 
@@ -922,6 +926,30 @@ def print_llm_response(result: dict) -> None:
         print("No se recibió respuesta del modelo.")
 
 
+def print_test_execution_output(result: dict) -> None:
+    """Imprime la salida de la ejecución de Maven separada de la respuesta del modelo."""
+    output = result.get("test_execution_output", "")
+    print("\n=== Salida de las pruebas Maven ===")
+    if output:
+        print(output)
+    else:
+        print("No se ejecutaron las pruebas Maven.")
+
+
+def print_validation_errors(result: dict) -> None:
+    """Imprime los errores registrados durante la validación."""
+    errors = result.get("validation_errors", [])
+    print("\n=== Errores de validación ===")
+    if not errors:
+        print("No se registraron errores de validación.")
+        return
+
+    for error in errors:
+        node_name = error.get("node", "<nodo desconocido>")
+        message = error.get("message", "<mensaje vacío>")
+        print(f"- [{node_name}] {message}")
+
+
 workflow = StateGraph(TestAgentState)
 workflow.add_node("get_context", get_context)
 workflow.add_node("send_context", send_context)
@@ -937,6 +965,10 @@ workflow.add_edge("get_context", "send_context")
 workflow.add_edge("send_context", "llm_call")
 workflow.add_edge("llm_call", "clean_output")
 workflow.add_edge("clean_output", "ast_parsing")
+
+workflow.add_edge("ast_parsing", "compiler")
+workflow.add_edge("compiler", "write_test_file")
+
 
 '''''
 workflow.add_conditional_edges(
@@ -984,3 +1016,5 @@ if __name__ == "__main__":
     print_context_summary(result)
     print_generated_context(result)
     print_llm_response(result)
+    print_test_execution_output(result)
+    print_validation_errors(result)
