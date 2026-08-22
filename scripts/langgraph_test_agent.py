@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Any, TypedDict
@@ -46,6 +48,9 @@ class TestAgentState(TypedDict, total=False):
     context: str
     llm_response: str
     written_test_file: str
+    validation_errors: list[dict[str, str]]
+    ast_parsing_passed: bool
+    compiler_passed: bool
 
 
 def git(repo_path: str, *args: str) -> str:
@@ -83,20 +88,294 @@ def read_file(path: Path) -> str:
             return path.read_text(encoding="utf-8", errors="ignore")
 
 
-def sanitize_generated_code(text: str) -> str:
-    """Quita delimitadores de bloque de código Markdown y devuelve solo el contenido del test."""
-    if text is None:
-        return ""
+def record_validation_error(state: TestAgentState, node_name: str, message: str) -> None:
+    errors = state.setdefault("validation_errors", [])
+    errors.append({"node": node_name, "message": message})
 
-    cleaned = str(text).strip()
-    if not cleaned:
-        return ""
 
-    fenced_block = re.search(r"```(?:\w+)?\s*\n(.*?)\n```", cleaned, re.DOTALL)
-    if fenced_block:
-        return fenced_block.group(1).strip()
+def clean_output(state: TestAgentState) -> TestAgentState:
+    """Elimina Markdown y texto adicional, dejando solo la región de código Java."""
+    response = state.get("llm_response", "") or ""
+    state["validation_errors"] = []
 
-    return cleaned
+    if not response.strip():
+        record_validation_error(state, "clean_output", "El output está vacío.")
+        return state
+
+    fenced_block = re.search(r"```[^\r\n]*\r?\n(.*?)\r?\n```", response, re.DOTALL)
+    cleaned = fenced_block.group(1).strip() if fenced_block else response.strip()
+    start_match = re.search(r"(?:package\b|import\b|public\s+class\b|class\b|@Test\b)", cleaned)
+    end_index = cleaned.rfind("}")
+
+    if not start_match or end_index == -1 or end_index < start_match.start():
+        record_validation_error(state, "clean_output", "La región de código está vacía después de la partición.")
+        state["llm_response"] = ""
+        return state
+
+    code_region = cleaned[start_match.start() : end_index + 1].strip()
+    if not code_region:
+        record_validation_error(state, "clean_output", "La región de código está vacía después de la partición.")
+        state["llm_response"] = ""
+        return state
+
+    state["llm_response"] = code_region
+    return state
+
+
+def _ast_validator_java_source() -> str:
+    return """import com.sun.source.tree.ClassTree;
+import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.tree.ImportTree;
+import com.sun.source.tree.MethodTree;
+import com.sun.source.util.JavacTask;
+import javax.tools.JavaCompiler;
+import javax.tools.StandardJavaFileManager;
+import javax.tools.ToolProvider;
+import javax.tools.JavaFileObject;
+import java.io.File;
+import java.util.Arrays;
+
+public class LangGraphJavaAstValidator {
+    public static void main(String[] args) throws Exception {
+        if (args.length != 1) {
+            System.out.println("FAIL:Se esperaba la ruta de un archivo Java.");
+            System.exit(1);
+        }
+
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null) {
+            System.out.println("FAIL:No se encontró el compilador Java en el JDK.");
+            System.exit(1);
+        }
+
+        File file = new File(args[0]);
+        if (!file.exists()) {
+            System.out.println("FAIL:El archivo Java proporcionado no existe.");
+            System.exit(1);
+        }
+
+        StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, null, null);
+        Iterable<? extends JavaFileObject> compilationUnits = fileManager.getJavaFileObjects(file);
+        JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null, Arrays.asList("-proc:none"), null, compilationUnits);
+
+        boolean foundImport = false;
+        boolean foundClass = false;
+        boolean foundTestMethod = false;
+        int topLevelClassCount = 0;
+
+        Iterable<? extends CompilationUnitTree> trees = task.parse();
+        for (CompilationUnitTree tree : trees) {
+            for (ImportTree importTree : tree.getImports()) {
+                String importStr = importTree.getQualifiedIdentifier().toString();
+                if (importStr.equals("org.junit.jupiter.api.Test") || importStr.equals("org.junit.Test")) {
+                    foundImport = true;
+                }
+            }
+
+            for (var typeDecl : tree.getTypeDecls()) {
+                if (typeDecl instanceof ClassTree) {
+                    topLevelClassCount++;
+                    ClassTree classTree = (ClassTree) typeDecl;
+                    foundClass = true;
+                    for (var member : classTree.getMembers()) {
+                        if (member instanceof MethodTree) {
+                            MethodTree method = (MethodTree) member;
+                            boolean hasTestAnnotation = method.getModifiers().getAnnotations().stream()
+                                    .anyMatch(a -> a.getAnnotationType().toString().endsWith("Test"));
+                            if (hasTestAnnotation) {
+                                foundTestMethod = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!foundClass) {
+            System.out.println("FAIL:No se ha detectado ninguna clase Java en el archivo.");
+            System.exit(1);
+        }
+        if (topLevelClassCount > 1) {
+            System.out.println("FAIL:Se detectaron varias clases de nivel superior.");
+            System.exit(1);
+        }
+        if (!foundImport) {
+            System.out.println("FAIL:No se ha detectado la importación de JUnit 5 Test.");
+            System.exit(1);
+        }
+        if (!foundTestMethod) {
+            System.out.println("FAIL:No se ha detectado ningún método anotado con @Test.");
+            System.exit(1);
+        }
+
+        System.out.println("PASS");
+    }
+}
+"""
+
+
+def _ensure_ast_validator(repo_path: Path) -> Path:
+    helper_dir = repo_path / "validator" / ".langgraph_ast_validator"
+    helper_dir.mkdir(parents=True, exist_ok=True)
+
+    source_file = helper_dir / "LangGraphJavaAstValidator.java"
+    class_file = helper_dir / "LangGraphJavaAstValidator.class"
+
+    source = _ast_validator_java_source()
+    if not source_file.exists() or source_file.read_text(encoding="utf-8") != source:
+        source_file.write_text(source, encoding="utf-8")
+
+    if not class_file.exists() or class_file.stat().st_mtime < source_file.stat().st_mtime:
+        is_windows = os.name == "nt"
+        compile_result = subprocess.run(
+            ["javac", str(source_file)],
+            cwd=str(helper_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=is_windows,
+        )
+        if compile_result.returncode != 0:
+            raise RuntimeError(
+                "No se pudo compilar el validador AST Java: "
+                + compile_result.stderr.strip()
+            )
+
+    return helper_dir
+
+
+def _run_ast_validator(java_file: Path, repo_path: Path) -> tuple[bool, str]:
+    helper_dir = _ensure_ast_validator(repo_path)
+    is_windows = os.name == "nt"
+
+    result = subprocess.run(
+        ["java", "-cp", str(helper_dir), "LangGraphJavaAstValidator", str(java_file)],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+        check=False,
+        shell=is_windows,
+    )
+    output = result.stdout.strip() or result.stderr.strip()
+    if result.returncode == 0 and output.startswith("PASS"):
+        return True, ""
+    return False, output
+
+
+def ast_parsing(state: TestAgentState) -> TestAgentState:
+    response = state.get("llm_response", "") or ""
+    state["ast_parsing_passed"] = False
+
+    if not response.strip():
+        record_validation_error(state, "ast_parsing", "No hay código para analizar.")
+        return state
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        repo_path = Path(state["repo_path"])
+        temp_file = Path(tmpdir) / "GeneratedTest.java"
+        temp_file.write_text(response, encoding="utf-8")
+
+        try:
+            passed, message = _run_ast_validator(temp_file, repo_path)
+        except Exception as exc:
+            record_validation_error(state, "ast_parsing", f"Error al ejecutar el validador AST: {exc}")
+            return state
+
+    if not passed:
+        record_validation_error(state, "ast_parsing", f"AST validation failed: {message}")
+        return state
+
+    state["ast_parsing_passed"] = True
+    return state
+
+
+def _get_maven_test_classpath(repo_path: Path) -> str:
+    output_path = repo_path / "target" / "langgraph_test_classpath.txt"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    is_windows = os.name == "nt"
+    result = subprocess.run(
+        [
+            "mvn",
+            "-q",
+            "-DincludeScope=test",
+            f"-Dmdep.outputFile={output_path}",
+            "dependency:build-classpath",
+        ],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+        check=False,
+        shell=is_windows,
+    )
+
+    if result.returncode != 0 or not output_path.exists():
+        raise RuntimeError(
+            "No se pudo obtener el classpath de Maven para la compilación: "
+            + (result.stderr.strip() or result.stdout.strip())
+        )
+
+    return output_path.read_text(encoding="utf-8").strip()
+
+
+def compiler(state: TestAgentState) -> TestAgentState:
+    response = state.get("llm_response", "") or ""
+    state["compiler_passed"] = False
+
+    if not response.strip():
+        record_validation_error(state, "compiler", "No hay código para compilar.")
+        return state
+
+    repo_path = Path(state["repo_path"])
+    is_windows = os.name == "nt"
+
+    try:
+        subprocess.run(
+            ["mvn", "-q", "-DskipTests=true", "compile"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            check=True,
+            shell=is_windows,
+        )
+    except subprocess.CalledProcessError as exc:
+        record_validation_error(state, "compiler", "Error al compilar las clases del proyecto antes de validar el test: " + exc.stderr.strip())
+        return state
+
+    try:
+        classpath = _get_maven_test_classpath(repo_path)
+    except Exception as exc:
+        record_validation_error(state, "compiler", str(exc))
+        return state
+
+    classpath_parts = [classpath]
+    main_classes = repo_path / "target" / "classes"
+    if main_classes.exists():
+        classpath_parts.append(str(main_classes))
+    full_classpath = os.pathsep.join(classpath_parts)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_file = Path(tmpdir) / "GeneratedTest.java"
+        temp_file.write_text(response, encoding="utf-8")
+        out_dir = Path(tmpdir) / "classes"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        result = subprocess.run(
+            ["javac", "-classpath", full_classpath, "-d", str(out_dir), str(temp_file)],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=is_windows,
+        )
+
+        if result.returncode != 0:
+            error_output = result.stderr.strip() or result.stdout.strip()
+            record_validation_error(state, "compiler", f"javac falló: {error_output}")
+            return state
+
+    state["compiler_passed"] = True
+    return state
 
 
 def find_test_file(repo_path: str, source_file: str) -> Path | None:
@@ -117,46 +396,142 @@ def find_test_file(repo_path: str, source_file: str) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _ast_dependency_parser_source() -> str:
+    return """import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.tree.IdentifierTree;
+import com.sun.source.tree.ImportTree;
+import com.sun.source.util.JavacTask;
+import com.sun.source.util.TreeScanner;
+import javax.tools.JavaCompiler;
+import javax.tools.StandardJavaFileManager;
+import javax.tools.ToolProvider;
+import javax.tools.JavaFileObject;
+import java.io.File;
+import java.util.Arrays;
+
+public class LangGraphJavaDependencyParser {
+    public static void main(String[] args) throws Exception {
+        if (args.length != 1) {
+            System.exit(1);
+        }
+
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null) {
+            System.exit(1);
+        }
+
+        StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, null, null);
+        Iterable<? extends JavaFileObject> files = fileManager.getJavaFileObjects(new File(args[0]));
+        JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null,
+                Arrays.asList("-proc:none"), null, files);
+
+        for (CompilationUnitTree tree : task.parse()) {
+            if (tree.getPackageName() != null) {
+                System.out.println("PACKAGE:" + tree.getPackageName());
+            }
+            for (ImportTree importTree : tree.getImports()) {
+                System.out.println("IMPORT:" + importTree.getQualifiedIdentifier());
+            }
+            new TreeScanner<Void, Void>() {
+                @Override
+                public Void visitIdentifier(IdentifierTree node, Void unused) {
+                    System.out.println("TYPE:" + node.getName());
+                    return super.visitIdentifier(node, unused);
+                }
+            }.scan(tree, null);
+        }
+    }
+}
+"""
+
+
+def _get_ast_dependency_metadata(repo_path: Path, target_path: Path) -> tuple[str, set[str]]:
+    helper_dir = repo_path / "validator" / ".langgraph_dependency_parser"
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    source_file = helper_dir / "LangGraphJavaDependencyParser.java"
+    class_file = helper_dir / "LangGraphJavaDependencyParser.class"
+    source = _ast_dependency_parser_source()
+
+    if not source_file.exists() or source_file.read_text(encoding="utf-8") != source:
+        source_file.write_text(source, encoding="utf-8")
+    if not class_file.exists() or class_file.stat().st_mtime < source_file.stat().st_mtime:
+        result = subprocess.run(
+            ["javac", str(source_file)], cwd=str(helper_dir), capture_output=True,
+            text=True, check=False, shell=os.name == "nt"
+        )
+        if result.returncode != 0:
+            raise RuntimeError("No se pudo compilar el parser AST de dependencias: " + result.stderr.strip())
+
+    result = subprocess.run(
+        ["java", "-cp", str(helper_dir), "LangGraphJavaDependencyParser", str(target_path)],
+        cwd=str(repo_path), capture_output=True, text=True, check=False, shell=os.name == "nt"
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "El parser AST no pudo analizar el archivo.")
+
+    package_name = ""
+    type_names: set[str] = set()
+    for line in result.stdout.splitlines():
+        if line.startswith("PACKAGE:"):
+            package_name = line.removeprefix("PACKAGE:").strip()
+        elif line.startswith("TYPE:"):
+            type_names.add(line.removeprefix("TYPE:").strip())
+    return package_name, type_names
+
+
 def get_dependencies(repo_path: str, file_name: str) -> list[str]:
-    """
-    Intenta encontrar nombres de archivos dependientes para un archivo dado.
-    Implementación simple basada en referencias a tipos y otros archivos del repo.
-    """
+    """Obtiene mediante AST las clases del proyecto usadas por un archivo Java."""
     repo = Path(repo_path)
     target_path = repo / file_name
-
-    if not target_path.exists():
+    source_root = repo / "src" / "main"
+    if not target_path.exists() or target_path.suffix != ".java" or not source_root.exists():
         return []
 
-    content = read_file(target_path)
-    candidates: list[str] = []
+    try:
+        package_name, type_names = _get_ast_dependency_metadata(repo, target_path)
+    except (OSError, RuntimeError):
+        return []
 
-    # 1) Buscar referencias a nombres de archivo con extensión evidentes
-    for token in content.split():
-        base_name = Path(token).name
-        if base_name.endswith((".java", ".kt", ".py", ".xml", ".json", ".yml", ".yaml", ".txt")):
-            candidate_path = repo / base_name
-            if candidate_path.exists():
-                candidates.append(base_name)
+    project_files = list(source_root.rglob("*.java"))
+    by_qualified_name = {}
+    by_simple_name = {}
+    for project_file in project_files:
+        relative = project_file.relative_to(source_root).with_suffix("")
+        qualified_name = ".".join(relative.parts)
+        by_qualified_name[qualified_name] = project_file
+        by_simple_name.setdefault(project_file.stem, []).append(project_file)
 
-    # 2) Buscar tipos Java usados en el archivo (ej. Author, User, Book)
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
+    dependencies: set[str] = set()
+    current_path = target_path.resolve()
+    for qualified_import in _get_ast_imports(repo, target_path):
+        if qualified_import.endswith(".*"):
+            imported_package = qualified_import[:-2]
+            for qualified_name, project_file in by_qualified_name.items():
+                if qualified_name.rsplit(".", 1)[0] == imported_package:
+                    if project_file.resolve() != current_path:
+                        dependencies.add(project_file.relative_to(repo).as_posix())
             continue
-        for token in line.replace("{", " ").replace("(", " ").replace(")", " ").replace(";", " ").replace(".", " ").split():
-            if not token:
-                continue
-            if token in {"private", "protected", "public", "final", "static", "return", "new", "this", "super"}:
-                continue
-            if token.startswith("//"):
-                break
-            if token and token[0].isupper():
-                candidate_path = repo / "src" / "main" / "model" / f"{token}.java"
-                if candidate_path.exists():
-                    candidates.append(str(candidate_path.relative_to(repo)).replace("\\", "/"))
+        project_file = by_qualified_name.get(qualified_import)
+        if project_file is not None and project_file.resolve() != current_path:
+            dependencies.add(project_file.relative_to(repo).as_posix())
 
-    return sorted(set(candidates))
+    for type_name in type_names:
+        for project_file in by_simple_name.get(type_name, []):
+            file_package = ".".join(project_file.relative_to(source_root).parts[:-1])
+            if file_package == package_name and project_file.resolve() != current_path:
+                dependencies.add(project_file.relative_to(repo).as_posix())
+
+    return sorted(dependencies)
+
+
+def _get_ast_imports(repo_path: Path, target_path: Path) -> list[str]:
+    """Extrae imports del mismo resultado AST sin volver a analizar el código."""
+    helper_dir = repo_path / "validator" / ".langgraph_dependency_parser"
+    result = subprocess.run(
+        ["java", "-cp", str(helper_dir), "LangGraphJavaDependencyParser", str(target_path)],
+        cwd=str(repo_path), capture_output=True, text=True, check=False, shell=os.name == "nt"
+    )
+    return [line.removeprefix("IMPORT:").strip() for line in result.stdout.splitlines() if line.startswith("IMPORT:")]
 
 
 def get_context(state: TestAgentState) -> TestAgentState:
@@ -396,7 +771,7 @@ def llm_call(state: TestAgentState) -> TestAgentState:
         )
         response = llm.invoke([HumanMessage(content=prompt)])
         response_text = response.content if hasattr(response, "content") else str(response)
-        state["llm_response"] = sanitize_generated_code(response_text)
+        state["llm_response"] = response_text
 
     except Exception as exc:
         state["llm_response"] = f"Error al llamar a LangChain: {exc}"
@@ -493,6 +868,18 @@ def should_continue(state: TestAgentState) -> str:
     return "send_context"
 
 
+def ast_parsing_decision(state: TestAgentState) -> str:
+    if state.get("ast_parsing_passed"):
+        return "compiler"
+    return "llm_call"
+
+
+def compiler_decision(state: TestAgentState) -> str:
+    if state.get("compiler_passed"):
+        return "write_test_file"
+    return "llm_call"
+
+
 def print_context_summary(result: dict) -> None:
     """Imprime por pantalla los nombres relevantes del contexto recopilado."""
     print("Archivos modificados:")
@@ -539,13 +926,37 @@ workflow = StateGraph(TestAgentState)
 workflow.add_node("get_context", get_context)
 workflow.add_node("send_context", send_context)
 workflow.add_node("llm_call", llm_call)
+workflow.add_node("clean_output", clean_output)
+workflow.add_node("ast_parsing", ast_parsing)
+workflow.add_node("compiler", compiler)
 workflow.add_node("write_test_file", write_test_file)
 workflow.add_node("execute_test_files", execute_test_files)
 
 workflow.add_edge(START, "get_context")
 workflow.add_edge("get_context", "send_context")
 workflow.add_edge("send_context", "llm_call")
-workflow.add_edge("llm_call", "write_test_file")
+workflow.add_edge("llm_call", "clean_output")
+workflow.add_edge("clean_output", "ast_parsing")
+
+'''''
+workflow.add_conditional_edges(
+    "ast_parsing",
+    ast_parsing_decision,
+    {
+        "compiler": "compiler",
+        "llm_call": "llm_call",
+    },
+)
+
+workflow.add_conditional_edges(
+    "compiler",
+    compiler_decision,
+    {
+        "write_test_file": "write_test_file",
+        "llm_call": "llm_call",
+    },
+)
+'''''
 
 workflow.add_conditional_edges(
     "write_test_file",
