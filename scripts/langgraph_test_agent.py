@@ -37,6 +37,7 @@ class ModifiedFile(TypedDict):
     dependencies: list[SourceFile]
     test_file_name: str | None
     test_file_content: str | None
+    written_test_file: str
 
 class ReportCallState(TypedDict):
     type: str | None
@@ -334,7 +335,7 @@ public class LangGraphJavaAstValidator {
 
 
 def _ensure_ast_validator(repo_path: Path) -> Path:
-    helper_dir = repo_path / "validator" / ".langgraph_ast_validator"
+    helper_dir = repo_path.resolve() / "validator" / ".langgraph_ast_validator"
     helper_dir.mkdir(parents=True, exist_ok=True)
 
     source_file = helper_dir / "LangGraphJavaAstValidator.java"
@@ -813,6 +814,7 @@ def get_context(state: TestAgentState) -> TestAgentState:
                 "dependencies": dependency_objects,
                 "test_file_name": test_name,
                 "test_file_content": test_content,
+                "written_test_file": "",
             }
         )
 
@@ -1020,7 +1022,9 @@ def write_test_file(state: TestAgentState) -> TestAgentState:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(generated_content, encoding="utf-8")
 
-    state["written_test_file"] = str(target_path.relative_to(Path(repo_path))).replace("\\", "/")
+    generated_test = generated_content
+    state["written_test_file"] = generated_test
+    modified_file["written_test_file"] = generated_test
     advance_to_next_file(state)
     
     return state
@@ -1028,9 +1032,16 @@ def write_test_file(state: TestAgentState) -> TestAgentState:
 
 def write_report_call_states(state: TestAgentState) -> TestAgentState:
     """Guarda todos los reportes generados durante la ejecución."""
-    report_path = Path(state.get("repo_path", ".")) / "report_call_states.json"
+    repo_path = Path(state.get("repo_path", "."))
+    report_path = repo_path / "report_call_states.json"
     report_path.write_text(
         json.dumps(state.get("report_call_states", []), indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+    modified_files_path = repo_path / "modified_files.json"
+    modified_files_path.write_text(
+        json.dumps(state.get("modified_files", []), indent=2, ensure_ascii=True),
         encoding="utf-8",
     )
     return state
@@ -1095,48 +1106,6 @@ def compilation_validation_decision(state: TestAgentState) -> str:
     return "llm_call"
 
 
-def print_context_summary(result: dict) -> None:
-    """Imprime por pantalla los nombres relevantes del contexto recopilado."""
-    print("Archivos modificados:")
-    for item in result.get("modified_files", []):
-        print(f"- {item.get('modified_file_name', '<sin nombre>')}")
-
-        dependency_names = [dep.get("file_name", "") for dep in item.get("dependencies", []) if dep.get("file_name")]
-        if dependency_names:
-            print("  Dependencias:")
-            for dep_name in dependency_names:
-                print(f"    - {dep_name}")
-        else:
-            print("  Dependencias: ninguna")
-
-        test_name = item.get("test_file_name")
-        if test_name:
-            print(f"  Test: {test_name}")
-        else:
-            print("  Test: no encontrado")
-
-
-def print_generated_context(result: dict) -> None:
-    """Imprime el contexto generado por send_context."""
-    context = result.get("context", "")
-    if not context:
-        print("No se generó contexto.")
-        return
-
-    print("\n=== Contexto generado por send_context ===")
-    print(context)
-
-
-def print_llm_response(result: dict) -> None:
-    """Imprime la respuesta del modelo Gemini."""
-    response = result.get("llm_response", "")
-    print("\n=== Respuesta de Gemini ===")
-    if response:
-        print(response)
-    else:
-        print("No se recibió respuesta del modelo.")
-
-
 def print_test_execution_output(result: dict) -> None:
     """Imprime la salida de la ejecución de Maven separada de la respuesta del modelo."""
     output = result.get("test_execution_output", "")
@@ -1145,20 +1114,6 @@ def print_test_execution_output(result: dict) -> None:
         print(output)
     else:
         print("No se ejecutaron las pruebas Maven.")
-
-
-def print_validation_errors(result: dict) -> None:
-    """Imprime los errores registrados durante la validación."""
-    errors = result.get("validation_errors", [])
-    print("\n=== Errores de validación ===")
-    if not errors:
-        print("No se registraron errores de validación.")
-        return
-
-    for error in errors:
-        node_name = error.get("node", "<nodo desconocido>")
-        message = error.get("message", "<mensaje vacío>")
-        print(f"- [{node_name}] {message}")
 
 
 workflow = StateGraph(TestAgentState)
@@ -1226,8 +1181,4 @@ def run_agent(repo_path: str) -> dict:
 
 if __name__ == "__main__":
     result = run_agent(repo_path=".")
-    print_context_summary(result)
-    print_generated_context(result)
-    print_llm_response(result)
     print_test_execution_output(result)
-    print_validation_errors(result)

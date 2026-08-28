@@ -2,8 +2,8 @@ import com.sun.source.tree.AssertTree;
 import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.ImportTree;
-import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.MethodTree;
+import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.util.JavacTask;
 import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.TreeScanner;
@@ -35,11 +35,11 @@ public class LangGraphJavaAstValidator {
 
         StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, null, null);
         Iterable<? extends JavaFileObject> compilationUnits = fileManager.getJavaFileObjects(file);
-        JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null, Arrays.asList("-proc:none"), null, compilationUnits);
+        JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null,
+                Arrays.asList("-proc:none"), null, compilationUnits);
 
         TestValidatorScanner scanner = new TestValidatorScanner();
-        Iterable<? extends CompilationUnitTree> trees = task.parse();
-        for (CompilationUnitTree tree : trees) {
+        for (CompilationUnitTree tree : task.parse()) {
             scanner.scan(tree, null);
         }
 
