@@ -194,11 +194,15 @@ def clean_output(state: TestAgentState) -> TestAgentState:
 
 
 def _ast_validator_java_source() -> str:
-    return """import com.sun.source.tree.ClassTree;
+    return """import com.sun.source.tree.AssertTree;
+import com.sun.source.tree.ClassTree;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.ImportTree;
 import com.sun.source.tree.MethodTree;
+import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.util.JavacTask;
+import com.sun.source.util.TreePathScanner;
+import com.sun.source.util.TreeScanner;
 import javax.tools.JavaCompiler;
 import javax.tools.StandardJavaFileManager;
 import javax.tools.ToolProvider;
@@ -227,59 +231,103 @@ public class LangGraphJavaAstValidator {
 
         StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, null, null);
         Iterable<? extends JavaFileObject> compilationUnits = fileManager.getJavaFileObjects(file);
-        JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null, Arrays.asList("-proc:none"), null, compilationUnits);
+        JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null,
+                Arrays.asList("-proc:none"), null, compilationUnits);
 
-        boolean foundImport = false;
-        boolean foundClass = false;
-        boolean foundTestMethod = false;
-        int topLevelClassCount = 0;
-
-        Iterable<? extends CompilationUnitTree> trees = task.parse();
-        for (CompilationUnitTree tree : trees) {
-            for (ImportTree importTree : tree.getImports()) {
-                String importStr = importTree.getQualifiedIdentifier().toString();
-                if (importStr.equals("org.junit.jupiter.api.Test") || importStr.equals("org.junit.Test")) {
-                    foundImport = true;
-                }
-            }
-
-            for (var typeDecl : tree.getTypeDecls()) {
-                if (typeDecl instanceof ClassTree) {
-                    topLevelClassCount++;
-                    ClassTree classTree = (ClassTree) typeDecl;
-                    foundClass = true;
-                    for (var member : classTree.getMembers()) {
-                        if (member instanceof MethodTree) {
-                            MethodTree method = (MethodTree) member;
-                            boolean hasTestAnnotation = method.getModifiers().getAnnotations().stream()
-                                    .anyMatch(a -> a.getAnnotationType().toString().endsWith("Test"));
-                            if (hasTestAnnotation) {
-                                foundTestMethod = true;
-                            }
-                        }
-                    }
-                }
-            }
+        TestValidatorScanner scanner = new TestValidatorScanner();
+        for (CompilationUnitTree tree : task.parse()) {
+            scanner.scan(tree, null);
         }
 
-        if (!foundClass) {
+        if (scanner.topLevelClassCount == 0) {
             System.out.println("FAIL:No se ha detectado ninguna clase Java en el archivo.");
             System.exit(1);
         }
-        if (topLevelClassCount > 1) {
+        if (scanner.topLevelClassCount > 1) {
             System.out.println("FAIL:Se detectaron varias clases de nivel superior.");
             System.exit(1);
         }
-        if (!foundImport) {
-            System.out.println("FAIL:No se ha detectado la importación de JUnit 5 Test.");
+        if (!scanner.foundJUnitImport) {
+            System.out.println("FAIL:No se ha detectado la importación de JUnit (org.junit.Test, org.junit.jupiter.api.Test u org.junit.jupiter.api.*).");
             System.exit(1);
         }
-        if (!foundTestMethod) {
+        if (scanner.testMethodCount == 0) {
             System.out.println("FAIL:No se ha detectado ningún método anotado con @Test.");
+            System.exit(1);
+        }
+        if (scanner.testMethodsWithoutAssert > 0) {
+            System.out.println("FAIL:Se detectó al menos un método @Test sin ningún assert ni verificación (Assertions, assertThat, verify, etc.).");
             System.exit(1);
         }
 
         System.out.println("PASS");
+    }
+
+    private static class TestValidatorScanner extends TreePathScanner<Void, Void> {
+        boolean foundJUnitImport = false;
+        int topLevelClassCount = 0;
+        int testMethodCount = 0;
+        int testMethodsWithoutAssert = 0;
+
+        @Override
+        public Void visitImport(ImportTree node, Void p) {
+            String importStr = node.getQualifiedIdentifier().toString();
+            if (importStr.equals("org.junit.jupiter.api.Test")
+                    || importStr.equals("org.junit.Test")
+                    || importStr.startsWith("org.junit.jupiter.api.")
+                    || importStr.startsWith("org.junit.framework.")) {
+                foundJUnitImport = true;
+            }
+            return super.visitImport(node, p);
+        }
+
+        @Override
+        public Void visitClass(ClassTree node, Void p) {
+            if (getCurrentPath().getParentPath().getLeaf() instanceof CompilationUnitTree) {
+                topLevelClassCount++;
+            }
+            return super.visitClass(node, p);
+        }
+
+        @Override
+        public Void visitMethod(MethodTree node, Void p) {
+            boolean isTestMethod = node.getModifiers().getAnnotations().stream()
+                    .anyMatch(a -> {
+                        String name = a.getAnnotationType().toString();
+                        return name.equals("Test") || name.endsWith(".Test");
+                    });
+
+            if (isTestMethod) {
+                testMethodCount++;
+                AssertVisitor assertVisitor = new AssertVisitor();
+                assertVisitor.scan(node.getBody(), null);
+                if (!assertVisitor.hasAssert) {
+                    testMethodsWithoutAssert++;
+                }
+            }
+            return super.visitMethod(node, p);
+        }
+    }
+
+    private static class AssertVisitor extends TreeScanner<Void, Void> {
+        boolean hasAssert = false;
+
+        @Override
+        public Void visitAssert(AssertTree node, Void p) {
+            hasAssert = true;
+            return super.visitAssert(node, p);
+        }
+
+        @Override
+        public Void visitMethodInvocation(MethodInvocationTree node, Void p) {
+            String expr = node.getMethodSelect().toString();
+            if (expr.contains("assert") || expr.contains("Assert")
+                    || expr.startsWith("assertThat") || expr.contains("verify")
+                    || expr.contains("fail")) {
+                hasAssert = true;
+            }
+            return super.visitMethodInvocation(node, p);
+        }
     }
 }
 """
@@ -361,22 +409,17 @@ def structural_validation(state: TestAgentState) -> TestAgentState:
     state["validation_errors"] = []
     state["ast_parsing_passed"] = False
     clean_output(state)
-    if state.get("validation_errors"):
-        add_report(
-            state,
-            "STRUCTURAL_ERROR_REPORT",
-            "clean output",
-            validation_description(state, "The generated test could not be cleaned into a valid Java code region."),
-        )
-        return state
-
     ast_parsing(state)
+
     if state.get("validation_errors"):
         add_report(
             state,
             "STRUCTURAL_ERROR_REPORT",
-            "ast parsing",
-            validation_description(state, "The generated test failed structural AST validation."),
+            "clean output and/or ast parsing",
+            validation_description(
+                state,
+                "The generated test failed structural validation.",
+            ),
         )
     return state
 
