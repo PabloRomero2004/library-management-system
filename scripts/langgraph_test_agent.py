@@ -7,12 +7,8 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
@@ -21,15 +17,45 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 
 
+if __package__:
+    from .auxiliary_functions import (
+        SourceFile,
+        build_test_context,
+        clean_java_output,
+        compile_generated_test,
+        find_test_file,
+        get_dependencies,
+        get_modified_source_files,
+        read_file,
+        run_maven_tests,
+        get_source_file_diff,
+        validate_generated_test,
+        write_run_reports,
+        write_test_content,
+    )
+else:
+    from auxiliary_functions import (
+        SourceFile,
+        build_test_context,
+        clean_java_output,
+        compile_generated_test,
+        find_test_file,
+        get_dependencies,
+        get_modified_source_files,
+        read_file,
+        run_maven_tests,
+        get_source_file_diff,
+        validate_generated_test,
+        write_run_reports,
+        write_test_content,
+    )
+
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(REPO_ROOT / ".env")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-
-class SourceFile(TypedDict):
-    file_name: str
-    file_content: str
-
+    
 class ModifiedFile(TypedDict):
     modified_file_name: str
     modified_file_content: str
@@ -39,123 +65,42 @@ class ModifiedFile(TypedDict):
     test_file_content: str | None
     written_test_file: str
 
-class ReportCallState(TypedDict):
-    type: str | None
-    generated_test: str
+class Report(TypedDict):
     information_source: str
     description: str
-    attempt: int
-    modified_file_name: str
+    generated_test: str
 
 class TestAgentState(TypedDict, total=False):
     repo_path: str
-    readme_content: str
     modified_files: list[ModifiedFile]
     modified_files_count: int
     current_file_ind: int
     attempts: int
-    report_call_state: ReportCallState
-    report_call_states: list[ReportCallState]
+    report_call_state: Report
+    report_call_states: list[Report]
     context: str
     llm_response: str
-    test_execution_output: str
-    written_test_file: str
-    validation_errors: list[dict[str, str]]
+    cleaning_passed: bool
     ast_parsing_passed: bool
     compiler_passed: bool
+    test_execution_output: str
     llm_call_failed: bool
-    file_skipped: bool
+    exception_occurred: bool
+    exception_message: str
 
-
-def git(repo_path: str, *args: str) -> str:
-    """
-    Ejecuta un comando git dentro del repositorio.
-    """
-
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        return result.stdout.strip() or result.stderr.strip()
-
-    return result.stdout.strip()
-
-
-def read_file(path: Path) -> str:
-    """
-    Lee el contenido de un archivo, tolerando archivos no UTF-8.
-    """
-    if not path.exists():
-        return ""
-
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        try:
-            return path.read_text(encoding="latin-1")
-        except Exception:
-            return path.read_text(encoding="utf-8", errors="ignore")
-
-
-def record_validation_error(state: TestAgentState, node_name: str, message: str) -> None:
-    errors = state.setdefault("validation_errors", [])
-    errors.append({"node": node_name, "message": message})
-
-
-def add_report(
-    state: TestAgentState,
-    report_type: str,
-    information_source: str,
-    description: str,
-) -> None:
-    report: ReportCallState = {
-        "type": report_type,
-        "generated_test": state.get("llm_response", "") or "",
-        "information_source": information_source,
-        "description": description,
-        "attempt": int(state.get("attempts", 0)),
-        "modified_file_name": get_current_modified_file_name(state),
-    }
-    state["report_call_state"] = report
-    state.setdefault("report_call_states", []).append(report)
-
-
-def validation_description(state: TestAgentState, fallback: str) -> str:
-    errors = state.get("validation_errors", [])
-    details = "; ".join(error.get("message", "") for error in errors if error.get("message"))
-    return details or fallback
-
-
-def get_current_modified_file_name(state: TestAgentState) -> str:
-    modified_files = state.get("modified_files", [])
-    current_file_ind = int(state.get("current_file_ind", 0))
-    if 0 <= current_file_ind < len(modified_files):
-        return modified_files[current_file_ind].get("modified_file_name", "")
-    return ""
 
 
 def reset_file_iteration_state(state: TestAgentState) -> None:
     state["attempts"] = 0
     state["context"] = ""
     state["llm_response"] = ""
-    state["written_test_file"] = ""
-    state["validation_errors"] = []
     state["ast_parsing_passed"] = False
     state["compiler_passed"] = False
     state["llm_call_failed"] = False
-    state["file_skipped"] = False
     state["report_call_state"] = {
-        "type": None,
         "generated_test": "",
         "information_source": "",
         "description": "",
-        "attempt": 0,
-        "modified_file_name": "",
     }
 
 
@@ -164,536 +109,21 @@ def advance_to_next_file(state: TestAgentState) -> None:
     reset_file_iteration_state(state)
 
 
-def clean_output(state: TestAgentState) -> TestAgentState:
-    """Elimina Markdown y texto adicional, dejando solo la región de código Java."""
-    response = state.get("llm_response", "") or ""
-    if state.get("llm_call_failed"):
-        return state
+def add_report(
+    state: TestAgentState,
+    information_source: str,
+    description: str,
+) -> None:
 
-    if not response.strip():
-        record_validation_error(state, "clean_output", "El output está vacío.")
-        return state
-
-    fenced_block = re.search(r"```[^\r\n]*\r?\n(.*?)\r?\n```", response, re.DOTALL)
-    cleaned = fenced_block.group(1).strip() if fenced_block else response.strip()
-    start_match = re.search(r"(?:package\b|import\b|public\s+class\b|class\b|@Test\b)", cleaned)
-    end_index = cleaned.rfind("}")
-
-    if not start_match or end_index == -1 or end_index < start_match.start():
-        record_validation_error(state, "clean_output", "La región de código está vacía después de la partición.")
-        state["llm_response"] = ""
-        return state
-
-    code_region = cleaned[start_match.start() : end_index + 1].strip()
-    if not code_region:
-        record_validation_error(state, "clean_output", "La región de código está vacía después de la partición.")
-        state["llm_response"] = ""
-        return state
-
-    state["llm_response"] = code_region
-    return state
-
-
-def _ast_validator_java_source() -> str:
-    return """import com.sun.source.tree.AssertTree;
-import com.sun.source.tree.ClassTree;
-import com.sun.source.tree.CompilationUnitTree;
-import com.sun.source.tree.ImportTree;
-import com.sun.source.tree.MethodTree;
-import com.sun.source.tree.MethodInvocationTree;
-import com.sun.source.util.JavacTask;
-import com.sun.source.util.TreePathScanner;
-import com.sun.source.util.TreeScanner;
-import javax.tools.JavaCompiler;
-import javax.tools.StandardJavaFileManager;
-import javax.tools.ToolProvider;
-import javax.tools.JavaFileObject;
-import java.io.File;
-import java.util.Arrays;
-
-public class LangGraphJavaAstValidator {
-    public static void main(String[] args) throws Exception {
-        if (args.length != 1) {
-            System.out.println("FAIL:Se esperaba la ruta de un archivo Java.");
-            System.exit(1);
-        }
-
-        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
-        if (compiler == null) {
-            System.out.println("FAIL:No se encontró el compilador Java en el JDK.");
-            System.exit(1);
-        }
-
-        File file = new File(args[0]);
-        if (!file.exists()) {
-            System.out.println("FAIL:El archivo Java proporcionado no existe.");
-            System.exit(1);
-        }
-
-        StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, null, null);
-        Iterable<? extends JavaFileObject> compilationUnits = fileManager.getJavaFileObjects(file);
-        JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null,
-                Arrays.asList("-proc:none"), null, compilationUnits);
-
-        TestValidatorScanner scanner = new TestValidatorScanner();
-        for (CompilationUnitTree tree : task.parse()) {
-            scanner.scan(tree, null);
-        }
-
-        if (scanner.topLevelClassCount == 0) {
-            System.out.println("FAIL:No se ha detectado ninguna clase Java en el archivo.");
-            System.exit(1);
-        }
-        if (scanner.topLevelClassCount > 1) {
-            System.out.println("FAIL:Se detectaron varias clases de nivel superior.");
-            System.exit(1);
-        }
-        if (!scanner.foundJUnitImport) {
-            System.out.println("FAIL:No se ha detectado la importación de JUnit (org.junit.Test, org.junit.jupiter.api.Test u org.junit.jupiter.api.*).");
-            System.exit(1);
-        }
-        if (scanner.testMethodCount == 0) {
-            System.out.println("FAIL:No se ha detectado ningún método anotado con @Test.");
-            System.exit(1);
-        }
-        if (scanner.testMethodsWithoutAssert > 0) {
-            System.out.println("FAIL:Se detectó al menos un método @Test sin ningún assert ni verificación (Assertions, assertThat, verify, etc.).");
-            System.exit(1);
-        }
-
-        System.out.println("PASS");
+    report: Report = {
+        "information_source": information_source,
+        "description": description,
+        "generated_test": state.get("llm_response", "") or "",
+        
     }
+    state["report_call_state"] = report
+    state.setdefault("report_call_states", []).append(report)
 
-    private static class TestValidatorScanner extends TreePathScanner<Void, Void> {
-        boolean foundJUnitImport = false;
-        int topLevelClassCount = 0;
-        int testMethodCount = 0;
-        int testMethodsWithoutAssert = 0;
-
-        @Override
-        public Void visitImport(ImportTree node, Void p) {
-            String importStr = node.getQualifiedIdentifier().toString();
-            if (importStr.equals("org.junit.jupiter.api.Test")
-                    || importStr.equals("org.junit.Test")
-                    || importStr.startsWith("org.junit.jupiter.api.")
-                    || importStr.startsWith("org.junit.framework.")) {
-                foundJUnitImport = true;
-            }
-            return super.visitImport(node, p);
-        }
-
-        @Override
-        public Void visitClass(ClassTree node, Void p) {
-            if (getCurrentPath().getParentPath().getLeaf() instanceof CompilationUnitTree) {
-                topLevelClassCount++;
-            }
-            return super.visitClass(node, p);
-        }
-
-        @Override
-        public Void visitMethod(MethodTree node, Void p) {
-            boolean isTestMethod = node.getModifiers().getAnnotations().stream()
-                    .anyMatch(a -> {
-                        String name = a.getAnnotationType().toString();
-                        return name.equals("Test") || name.endsWith(".Test");
-                    });
-
-            if (isTestMethod) {
-                testMethodCount++;
-                AssertVisitor assertVisitor = new AssertVisitor();
-                assertVisitor.scan(node.getBody(), null);
-                if (!assertVisitor.hasAssert) {
-                    testMethodsWithoutAssert++;
-                }
-            }
-            return super.visitMethod(node, p);
-        }
-    }
-
-    private static class AssertVisitor extends TreeScanner<Void, Void> {
-        boolean hasAssert = false;
-
-        @Override
-        public Void visitAssert(AssertTree node, Void p) {
-            hasAssert = true;
-            return super.visitAssert(node, p);
-        }
-
-        @Override
-        public Void visitMethodInvocation(MethodInvocationTree node, Void p) {
-            String expr = node.getMethodSelect().toString();
-            if (expr.contains("assert") || expr.contains("Assert")
-                    || expr.startsWith("assertThat") || expr.contains("verify")
-                    || expr.contains("fail")) {
-                hasAssert = true;
-            }
-            return super.visitMethodInvocation(node, p);
-        }
-    }
-}
-"""
-
-
-def _ensure_ast_validator(repo_path: Path) -> Path:
-    helper_dir = repo_path.resolve() / "validator" / ".langgraph_ast_validator"
-    helper_dir.mkdir(parents=True, exist_ok=True)
-
-    source_file = helper_dir / "LangGraphJavaAstValidator.java"
-    class_file = helper_dir / "LangGraphJavaAstValidator.class"
-
-    source = _ast_validator_java_source()
-    if not source_file.exists() or source_file.read_text(encoding="utf-8") != source:
-        source_file.write_text(source, encoding="utf-8")
-
-    if not class_file.exists() or class_file.stat().st_mtime < source_file.stat().st_mtime:
-        compile_result = subprocess.run(
-            ["javac", str(source_file)],
-            cwd=str(helper_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if compile_result.returncode != 0:
-            raise RuntimeError(
-                "No se pudo compilar el validador AST Java: "
-                + compile_result.stderr.strip()
-            )
-
-    return helper_dir
-
-
-def _run_ast_validator(java_file: Path, repo_path: Path) -> tuple[bool, str]:
-    helper_dir = _ensure_ast_validator(repo_path)
-
-    result = subprocess.run(
-        ["java", "-cp", str(helper_dir), "LangGraphJavaAstValidator", str(java_file)],
-        cwd=str(repo_path),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    output = result.stdout.strip() or result.stderr.strip()
-    if result.returncode == 0 and output.startswith("PASS"):
-        return True, ""
-    return False, output
-
-
-def ast_parsing(state: TestAgentState) -> TestAgentState:
-    response = state.get("llm_response", "") or ""
-    state["ast_parsing_passed"] = False
-
-    if not response.strip():
-        record_validation_error(state, "ast_parsing", "No hay código para analizar.")
-        return state
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_path = Path(state["repo_path"])
-        temp_file = Path(tmpdir) / "GeneratedTest.java"
-        temp_file.write_text(response, encoding="utf-8")
-
-        try:
-            passed, message = _run_ast_validator(temp_file, repo_path)
-        except Exception as exc:
-            record_validation_error(state, "ast_parsing", f"Error al ejecutar el validador AST: {exc}")
-            return state
-
-    if not passed:
-        record_validation_error(state, "ast_parsing", f"AST validation failed: {message}")
-        return state
-
-    state["ast_parsing_passed"] = True
-    return state
-
-
-def structural_validation(state: TestAgentState) -> TestAgentState:
-    """Valida el formato generado y su estructura Java mediante AST."""
-    state["validation_errors"] = []
-    state["ast_parsing_passed"] = False
-    clean_output(state)
-    ast_parsing(state)
-
-    if state.get("validation_errors"):
-        add_report(
-            state,
-            "STRUCTURAL_ERROR_REPORT",
-            "clean output and/or ast parsing",
-            validation_description(
-                state,
-                "The generated test failed structural validation.",
-            ),
-        )
-    return state
-
-
-def _get_maven_test_classpath(repo_path: Path) -> str:
-    output_path = repo_path / "target" / "langgraph_test_classpath.txt"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    is_windows = os.name == "nt"
-    result = subprocess.run(
-        [
-            "mvn",
-            "-q",
-            "-DincludeScope=test",
-            f"-Dmdep.outputFile={output_path}",
-            "dependency:build-classpath",
-        ],
-        cwd=str(repo_path),
-        capture_output=True,
-        text=True,
-        check=False,
-        shell=is_windows,
-    )
-
-    if result.returncode != 0 or not output_path.exists():
-        raise RuntimeError(
-            "No se pudo obtener el classpath de Maven para la compilación: "
-            + (result.stderr.strip() or result.stdout.strip())
-        )
-
-    return output_path.read_text(encoding="utf-8").strip()
-
-
-def compiler(state: TestAgentState) -> TestAgentState:
-    response = state.get("llm_response", "") or ""
-    state["compiler_passed"] = False
-
-    if not response.strip():
-        record_validation_error(state, "compiler", "No hay código para compilar.")
-        return state
-
-    repo_path = Path(state["repo_path"])
-    is_windows = os.name == "nt"
-
-    try:
-        subprocess.run(
-            ["mvn", "-q", "-DskipTests=true", "compile"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            check=True,
-            shell=is_windows,
-        )
-    except subprocess.CalledProcessError as exc:
-        record_validation_error(state, "compiler", "Error al compilar las clases del proyecto antes de validar el test: " + exc.stderr.strip())
-        return state
-
-    try:
-        classpath = _get_maven_test_classpath(repo_path)
-    except Exception as exc:
-        record_validation_error(state, "compiler", str(exc))
-        return state
-
-    classpath_parts = [classpath]
-    main_classes = repo_path / "target" / "classes"
-    if main_classes.exists():
-        classpath_parts.append(str(main_classes))
-    full_classpath = os.pathsep.join(classpath_parts)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        temp_file = Path(tmpdir) / "GeneratedTest.java"
-        temp_file.write_text(response, encoding="utf-8")
-        out_dir = Path(tmpdir) / "classes"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        result = subprocess.run(
-            ["javac", "-classpath", full_classpath, "-d", str(out_dir), str(temp_file)],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        if result.returncode != 0:
-            error_output = result.stderr.strip() or result.stdout.strip()
-            record_validation_error(state, "compiler", f"javac falló: {error_output}")
-            return state
-
-    state["compiler_passed"] = True
-    return state
-
-
-def compilation_validation(state: TestAgentState) -> TestAgentState:
-    """Valida que el test generado compile con el proyecto y sus dependencias."""
-    state["validation_errors"] = []
-    compiler(state)
-    if state.get("validation_errors"):
-        add_report(
-            state,
-            "COMPILATION-ERROR_REPORT",
-            "compiler",
-            validation_description(
-                state,
-                "The generated test failed compilation. Review the compiler diagnostics and correct the test.",
-            ),
-        )
-    return state
-
-
-def improvement_validation(state: TestAgentState) -> TestAgentState:
-    """Punto de extensión para branch covering y rule covering."""
-    return state
-
-
-def find_test_file(repo_path: str, source_file: str) -> Path | None:
-    """
-    Busca el archivo de test asociado al archivo modificado.
-    Busca solo bajo src/test y con el patrón exacto <nombre>Test.*.
-    """
-
-    repo = Path(repo_path)
-    test_root = repo / "src" / "test"
-    if not test_root.exists():
-        return None
-
-    file_name = Path(source_file).stem
-    expected_name = f"{file_name}Test"
-
-    candidates = list(test_root.rglob(f"{expected_name}.*"))
-    return candidates[0] if candidates else None
-
-
-def _ast_dependency_parser_source() -> str:
-    return """import com.sun.source.tree.CompilationUnitTree;
-import com.sun.source.tree.IdentifierTree;
-import com.sun.source.util.JavacTask;
-import com.sun.source.util.Trees;
-import com.sun.source.util.TreeScanner;
-import javax.lang.model.element.Element;
-import javax.lang.model.element.ElementKind;
-import javax.lang.model.element.QualifiedNameable;
-import javax.tools.JavaCompiler;
-import javax.tools.StandardJavaFileManager;
-import javax.tools.ToolProvider;
-import javax.tools.JavaFileObject;
-import java.io.File;
-import java.util.Arrays;
-
-public class LangGraphJavaDependencyParser {
-    public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
-            System.exit(1);
-        }
-
-        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
-        if (compiler == null) {
-            System.exit(1);
-        }
-
-        StandardJavaFileManager fileManager = compiler.getStandardFileManager(null, null, null);
-        Iterable<? extends JavaFileObject> files = fileManager.getJavaFileObjects(new File(args[0]));
-        JavacTask task = (JavacTask) compiler.getTask(null, fileManager, null,
-            Arrays.asList("-proc:none", "-sourcepath", args[1]), null, files);
-        Iterable<? extends CompilationUnitTree> units = task.parse();
-        task.analyze();
-        Trees trees = Trees.instance(task);
-
-        for (CompilationUnitTree tree : units) {
-            new TreeScanner<Void, Void>() {
-                @Override
-                public Void visitIdentifier(IdentifierTree node, Void unused) {
-                    Element element = trees.getElement(trees.getPath(tree, node));
-                    if (element != null && (element.getKind() == ElementKind.CLASS
-                            || element.getKind() == ElementKind.INTERFACE
-                            || element.getKind() == ElementKind.ENUM
-                            || element.getKind() == ElementKind.RECORD)) {
-                        if (element instanceof QualifiedNameable qualified) {
-                            System.out.println("TYPE:" + element.getKind() + ":" + qualified.getQualifiedName());
-                        }
-                    }
-                    return super.visitIdentifier(node, unused);
-                }
-            }.scan(tree, null);
-        }
-    }
-}
-"""
-
-
-def _get_ast_dependency_metadata(repo_path: Path, target_path: Path) -> set[str]:
-    helper_dir = repo_path / "validator" / ".langgraph_dependency_parser"
-    helper_dir.mkdir(parents=True, exist_ok=True)
-    source_file = helper_dir / "LangGraphJavaDependencyParser.java"
-    class_file = helper_dir / "LangGraphJavaDependencyParser.class"
-    source = _ast_dependency_parser_source()
-
-    if not source_file.exists() or source_file.read_text(encoding="utf-8") != source:
-        source_file.write_text(source, encoding="utf-8")
-    if not class_file.exists() or class_file.stat().st_mtime < source_file.stat().st_mtime:
-        result = subprocess.run(
-            ["javac", source_file.name], cwd=str(helper_dir), capture_output=True,
-            text=True, check=False
-        )
-        if result.returncode != 0:
-            raise RuntimeError("No se pudo compilar el parser AST de dependencias: " + result.stderr.strip())
-
-    result = subprocess.run(
-        [
-            "java",
-            "-cp",
-            str(helper_dir),
-            "LangGraphJavaDependencyParser",
-            str(target_path),
-            str(repo_path / "src" / "main"),
-        ],
-        cwd=str(repo_path), capture_output=True, text=True, check=False
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "El parser AST no pudo analizar el archivo.")
-
-    type_names: set[str] = set()
-    for line in result.stdout.splitlines():
-        if line.startswith("TYPE:"):
-            _, _, qualified_name = line.removeprefix("TYPE:").partition(":")
-            if qualified_name:
-                type_names.add(qualified_name.strip())
-    return type_names
-
-
-def get_dependencies(repo_path: str, file_name: str) -> list[str]:
-    """Obtiene recursivamente mediante AST las clases del proyecto usadas por un archivo Java."""
-    repo = Path(repo_path).resolve()
-    target_path = repo / file_name
-    source_root = repo / "src" / "main"
-    if not target_path.exists() or target_path.suffix != ".java" or not source_root.exists():
-        return []
-
-    project_files = list(source_root.rglob("*.java"))
-    by_qualified_name = {}
-    for project_file in project_files:
-        relative = project_file.relative_to(source_root).with_suffix("")
-        qualified_name = ".".join(relative.parts)
-        by_qualified_name[qualified_name] = project_file
-
-    dependencies: set[str] = set()
-    pending = [target_path]
-    visited: set[Path] = set()
-
-    while pending:
-        current_path = pending.pop(0).resolve()
-        if current_path in visited:
-            continue
-        visited.add(current_path)
-
-        try:
-            type_names = _get_ast_dependency_metadata(repo, current_path)
-        except (OSError, RuntimeError):
-            continue
-
-        direct_dependencies: set[Path] = set()
-        for qualified_name in type_names:
-            project_file = by_qualified_name.get(qualified_name)
-            if project_file is not None:
-                direct_dependencies.add(project_file.resolve())
-
-        for dependency_path in direct_dependencies:
-            if dependency_path == current_path or dependency_path in visited:
-                continue
-            dependency_name = dependency_path.relative_to(repo).as_posix()
-            dependencies.add(dependency_name)
-            pending.append(dependency_path)
-
-    return sorted(dependencies)
 
 
 def get_context(state: TestAgentState) -> TestAgentState:
@@ -717,29 +147,10 @@ def get_context(state: TestAgentState) -> TestAgentState:
     state["context"] = ""
 
     #
-    # README
-    #
-
-    readme = repo / "README.md"
-
-    if readme.exists():
-        state["readme_content"] = read_file(readme)
-    else:
-        state["readme_content"] = ""
-
-    #
     # archivos modificados
     #
 
-    modified_files = git(
-        state["repo_path"],
-        "diff",
-        "--name-only",
-        "HEAD~1",
-        "HEAD",
-        "--",
-        "src/main",
-    ).splitlines()
+    modified_files = get_modified_source_files(state["repo_path"])
 
     for file_name in modified_files:
 
@@ -752,14 +163,7 @@ def get_context(state: TestAgentState) -> TestAgentState:
         # diff
         #
 
-        diff = git(
-            state["repo_path"],
-            "diff",
-            "HEAD~1",
-            "HEAD",
-            "--",
-            file_name,
-        )
+        diff = get_source_file_diff(state["repo_path"], file_name)
 
         # contenido
         content = read_file(file_path)
@@ -767,10 +171,15 @@ def get_context(state: TestAgentState) -> TestAgentState:
         # dependencias
         dependency_objects = []
 
-        dependency_names = get_dependencies(
+        dependency_names, error_occurred, error_message = get_dependencies(
             state["repo_path"],
             file_name,
         )
+
+        if error_occurred:
+            state["exception_occurred"] = True
+            state["exception_message"] = error_message
+            return state
 
         for dependency in dependency_names:
 
@@ -821,6 +230,10 @@ def get_context(state: TestAgentState) -> TestAgentState:
     state["modified_files_count"] = len(state["modified_files"])
     state["current_file_ind"] = 0
 
+    if state["modified_files_count"] == 0:
+        state["exception_occurred"] = True
+        state["exception_message"] = "No se encontraron archivos modificados en el repositorio."
+
     return state
 
 
@@ -849,62 +262,14 @@ def send_context(state: TestAgentState) -> TestAgentState:
     test_file_name = modified_file.get("test_file_name")
     test_file_content = modified_file.get("test_file_content")
 
-    dependency_lines = []
-    if dependencies:
-        for dependency in dependencies:
-            dependency_name = dependency.get("file_name", "<unknown>")
-            dependency_content = dependency.get("file_content", "")
-            dependency_lines.append(f"- {dependency_name}")
-            if dependency_content and dependency_content.strip():
-                dependency_lines.append("  Content:")
-                for line in dependency_content.splitlines():
-                    dependency_lines.append(f"    {line}")
-            else:
-                dependency_lines.append("  Content: <empty file>")
-    else:
-        dependency_lines.append("- No dependencies found.")
-
-    if test_file_name:
-        test_name_text = test_file_name
-    else:
-        test_name_text = "No test file found."
-
-    if test_file_content and test_file_content.strip():
-        test_content_text = test_file_content
-    else:
-        test_content_text = "No test file content found."
-
-    context_lines = [
-        "You are an automated test generator for modified files.",
-        "Your job is to inspect the modified file, its changes, its dependencies, and any existing test file, then produce the final content of a test file.",
-        "Return only the final content of a test file, including imports and package declarations, and nothing else.",
-        "",
-        "Modified file name:",
-        modified_file_name,
-        "",
-        "Modified file content:",
-        modified_file_content or "<empty file>",
-        "",
-        "Changes for this file:",
-        modified_file_changes or "No changes detected.",
-        "",
-        "Dependencies:",
-        *dependency_lines,
-        "",
-        "Associated test file name:",
-        test_name_text,
-        "",
-        "Associated test file content:",
-        test_content_text,
-        "",
-        "Instructions:",
-        "- If a test file already exists, use its content as a base and add the new tests required to validate the recent code changes.",
-        "- If no test file exists, create a complete test file content that covers the new changes.",
-        "- The final result must be only a test file content (with imports and package declarations included) and no extra commentary.",
-    ]
-
-    state["context"] = "\n".join(context_lines)
-    state["current_file_ind"] = current_file_ind
+    state["context"] = build_test_context(
+        modified_file_name=modified_file_name,
+        modified_file_content=modified_file_content,
+        modified_file_changes=modified_file_changes,
+        dependencies=dependencies,
+        test_file_name=test_file_name,
+        test_file_content=test_file_content,
+    )
 
     return state
 
@@ -918,47 +283,27 @@ def load_api_key() -> str:
 
 def llm_call(state: TestAgentState) -> TestAgentState:
     """Invoca al modelo Gemini con la variable de estado context como prompt."""
-    state["llm_call_failed"] = False
-    state["file_skipped"] = False
-    current_file_ind = int(state.get("current_file_ind", 0))
-    modified_files_count = int(state.get("modified_files_count", 0))
-    attempts = int(state.get("attempts", 0))
+    state["exception_occurred"] = False
+    state["exception_message"] = ""
 
-    if current_file_ind >= modified_files_count:
-        state["file_skipped"] = True
-        return state
-
-    if attempts >= 10:
-        advance_to_next_file(state)
-        state["file_skipped"] = True
-        return state
-
-    state["attempts"] = attempts + 1
     prompt = state.get("context", "") or ""
     if not prompt.strip():
-        state["llm_response"] = "No hay contexto disponible para enviar al modelo."
-        state["llm_call_failed"] = True
+        state["exception_occurred"] = True
+        state["exception_message"] = "No hay contexto disponible para enviar al modelo."
         return state
 
-    report = state.get("report_call_state", {})
-    report_type = report.get("type")
-    if report_type:
-        guidance_by_type = {
-            "STRUCTURAL_ERROR_REPORT": "Fix the Java output structure and AST issues described in the report.",
-            "COMPILATION-ERROR_REPORT": "Fix the compilation errors described in the report while preserving the requested tests.",
-            "IMPROVEMENT_REPORT": "Improve branch and rule coverage according to the report without breaking compilation.",
-        }
-        guidance = guidance_by_type.get(report_type, "Correct the generated test according to the report.")
+    report = state.get("report_call_state", None)
+
+    if report:
         prompt = (
-            f"{prompt}\n\nCorrection instructions:\n{guidance}"
-            f"\nReport from the previous attempt:\n{json.dumps(report, ensure_ascii=True)}"
+            f"{prompt}\nReport from the previous attempt:\n{json.dumps(report, ensure_ascii=True)}"
         )
 
     try:
         api_key = load_api_key()
     except Exception as exc:
-        state["llm_response"] = f"Error al cargar la API key: {exc}"
-        state["llm_call_failed"] = True
+        state["exception_occurred"] = True
+        state["exception_message"] = f"Error al cargar la API key: {exc}"
         return state
 
     try:
@@ -973,103 +318,137 @@ def llm_call(state: TestAgentState) -> TestAgentState:
         state["llm_response"] = response_text
 
     except Exception as exc:
-        state["llm_response"] = f"Error al llamar a LangChain: {exc}"
-        state["llm_call_failed"] = True
+        state["exception_occurred"] = True
+        state["exception_message"] = f"Error al llamar a LangChain: {exc}"
+
+    state["attempts"] = int(state.get("attempts", 0)) + 1
 
     return state
 
 
-def build_test_file_path(repo_path: str, modified_file_name: str) -> Path:
-    """Construye la ruta del archivo de test a partir del archivo modificado."""
-    repo = Path(repo_path)
-    modified_path = Path(modified_file_name)
-    parts = modified_path.parts
 
-    if len(parts) >= 2 and parts[0] == "src" and parts[1] == "main":
-        relative_parts = parts[2:]
+def cleaning_validation(state: TestAgentState) -> TestAgentState:
+    """Limpia el output de posible texto adicional o Markdown y comprueba que haya código Java y se queda solo con ese código."""
+    state["cleaning_passed"] = False
+
+    if not state.get("exception_occurred"):
+        cleaned, source, error = clean_java_output(state.get("llm_response", "") or "")
+        if error:
+            add_report(
+                state,
+                source,
+                error
+            )
+        else:
+            state["cleaning_passed"] = True
+            state["llm_response"] = cleaned
+        
+    return state
+
+
+def parsing_validation(state: TestAgentState) -> TestAgentState:
+    """Valida el formato generado y su estructura Java mediante AST."""
+    state["ast_parsing_passed"] = False
+
+    passed, source, error, execution_failed = validate_generated_test(
+        state.get("llm_response", "") or "",
+        Path(state["repo_path"]),
+    )
+
+    if execution_failed:
+        state["exception_occurred"] = True
+        state["exception_message"] = f"Error al ejecutar el validador AST: {error}"
+        return state
+
+    if passed:
+        state["ast_parsing_passed"] = True
     else:
-        relative_parts = parts
+        add_report(
+            state,
+            source,
+            error,
+        )
 
-    if not relative_parts:
-        return repo / "src" / "test" / "GeneratedTest.java"
+    return state
 
-    file_name = Path(relative_parts[-1]).stem
-    target_name = f"{file_name}Test.java"
-    target_parts = ("src", "test") + relative_parts[:-1] + (target_name,)
-    return repo.joinpath(*target_parts)
+
+def compilation_validation(state: TestAgentState) -> TestAgentState:
+    """Valida que el test generado compile con el proyecto y sus dependencias."""
+    state["compiler_passed"] = False
+    passed, source, error, execution_failed = compile_generated_test(
+        state.get("llm_response", "") or "",
+        Path(state["repo_path"]),
+    )
+    if execution_failed:
+        state["exception_occurred"] = True
+        state["exception_message"] = f"Error al ejecutar el compilador: {error}"
+        return state
+
+    if passed:
+        state["compiler_passed"] = True
+    else:
+        add_report(
+            state,
+            source,
+            error
+        )
+    return state
+
 
 
 def write_test_file(state: TestAgentState) -> TestAgentState:
-    """Crea o sobrescribe el archivo de test según exista o no para el archivo modificado actual."""
-    repo_path = state.get("repo_path", ".")
+    """Nodo que delega la escritura y conserva aquí las mutaciones del estado."""
     modified_files = state.get("modified_files", [])
     current_file_ind = int(state.get("current_file_ind", 0))
+    validation_passed = state.get("cleaning_passed", False) and state.get("ast_parsing_passed", False) and state.get("compiler_passed", False)
 
     if not modified_files or current_file_ind >= len(modified_files):
-        state["written_test_file"] = ""
         return state
 
-    modified_file = modified_files[current_file_ind]
-    generated_content = state.get("llm_response", "") or ""
-    test_file_name = modified_file.get("test_file_name")
-    test_file_content = modified_file.get("test_file_content")
-
-    if test_file_name and str(test_file_name).strip() and test_file_content is not None:
-        target_path = Path(repo_path) / test_file_name
+    if validation_passed:
+        modified_file = modified_files[current_file_ind]
+        generated_content = state.get("llm_response", "") or ""
+        write_test_content(state.get("repo_path", "."), modified_file, generated_content)
+        modified_file["written_test_file"] = generated_content
+        
     else:
-        target_path = build_test_file_path(repo_path, modified_file.get("modified_file_name", ""))
+        modified_file["written_test_file"] = "No test file written due to validation errors."
 
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(generated_content, encoding="utf-8")
-
-    generated_test = generated_content
-    state["written_test_file"] = generated_test
-    modified_file["written_test_file"] = generated_test
     advance_to_next_file(state)
     
     return state
 
 
-def write_report_call_states(state: TestAgentState) -> TestAgentState:
-    """Guarda todos los reportes generados durante la ejecución."""
-    repo_path = Path(state.get("repo_path", "."))
-    report_path = repo_path / "report_call_states.json"
-    report_path.write_text(
-        json.dumps(state.get("report_call_states", []), indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
-
-    modified_files_path = repo_path / "modified_files.json"
-    modified_files_path.write_text(
-        json.dumps(state.get("modified_files", []), indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
-    return state
-
 
 def execute_test_files(state: TestAgentState) -> TestAgentState:
-    """
-    Ejecuta las pruebas unitarias del proyecto mediante Maven (mvn test).
-    """
-    print("\n=== Ejecutando pruebas unitarias con Maven ===")
-    repo_path = state.get("repo_path", ".")
-
-    # En Windows, para ejecutar 'mvn' (que es un archivo .cmd/.bat) necesitamos shell=True
-    is_windows = os.name == "nt"
-    
-    result = subprocess.run(
-        ["mvn", "test"],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        check=False,
-        shell=is_windows,
-    )
-    
-    # Consolidamos la salida estándar y la de error para el reporte del agente
-    output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-    state["test_execution_output"] = f"Maven Execution Return Code: {result.returncode}\n\n{output}"
+    """Nodo que ejecuta la operación auxiliar y almacena su resultado."""
+    state["test_execution_output"] = run_maven_tests(state.get("repo_path", "."))
     return state
+
+
+def get_context_decision(state: TestAgentState) -> str:
+    """
+    Determina si se debe proceder a enviar el contexto al LLM o si se debe pasar al siguiente archivo.
+    """
+    exception_occurred = state.get("exception_occurred", False)
+
+    if exception_occurred:
+        return END
+    
+    return "send_context"
+
+
+def llm_call_decision(state: TestAgentState) -> str:
+    """
+    Determina si se debe proceder a la validación o si se debe intentar otra llamada al LLM.
+    """
+    exception_occurred = state.get("exception_occurred", False)
+
+    if exception_occurred:
+        return END
+    
+    return "cleaning_validation"
+
 
 
 def should_continue(state: TestAgentState) -> str:
@@ -1081,33 +460,54 @@ def should_continue(state: TestAgentState) -> str:
     modified_files_count = int(state.get("modified_files_count", 0))
 
     if current_file_ind >= modified_files_count:
-        return "write_report_call_states"
+        return "execute_test_files"
     
     return "send_context"
 
 
-def llm_call_decision(state: TestAgentState) -> str:
-    if state.get("file_skipped"):
-        if int(state.get("current_file_ind", 0)) >= int(state.get("modified_files_count", 0)):
-            return "write_report_call_states"
-        return "send_context"
-    return "structural_validation"
 
+def cleaning_validation_decision(state: TestAgentState) -> str:
+    if state.get("cleaning_passed"):
+        return "parsing_validation"
+    return "attempt_verification"
 
-def structural_validation_decision(state: TestAgentState) -> str:
+def parsing_validation_decision(state: TestAgentState) -> str:
+    if state.get("exception_occurred"):
+        return END
     if state.get("ast_parsing_passed"):
         return "compilation_validation"
-    return "llm_call"
-
+    return "attempt_verification"
 
 def compilation_validation_decision(state: TestAgentState) -> str:
+    if state.get("exception_occurred"):
+        return END
     if state.get("compiler_passed"):
-        return "improvement_validation"
+        return "write_test_file"
+    return "attempt_verification"
+
+
+def attempt_verification(state: TestAgentState) -> str:
+    """
+    Determina si se debe intentar otra llamada al LLM o si se debe pasar al siguiente archivo.
+    """
+    attempts = int(state.get("attempts", 0))
+    if attempts >= 10:
+        return "write_test_file"
+    
     return "llm_call"
+
+
+def write_report_call_states(result: dict) -> None:
+    """Guarda todos los reportes generados durante la ejecución."""
+    write_run_reports(
+        result.get("repo_path", "."),
+        result.get("report_call_states", []),
+        result.get("modified_files", []),
+    )
 
 
 def print_test_execution_output(result: dict) -> None:
-    """Imprime la salida de la ejecución de Maven separada de la respuesta del modelo."""
+    """Imprime la salida de la ejecución de Maven."""
     output = result.get("test_execution_output", "")
     print("\n=== Salida de las pruebas Maven ===")
     if output:
@@ -1120,53 +520,77 @@ workflow = StateGraph(TestAgentState)
 workflow.add_node("get_context", get_context)
 workflow.add_node("send_context", send_context)
 workflow.add_node("llm_call", llm_call)
-workflow.add_node("structural_validation", structural_validation)
+workflow.add_node("cleaning_validation", cleaning_validation)
+workflow.add_node("parsing_validation", parsing_validation)
 workflow.add_node("compilation_validation", compilation_validation)
-workflow.add_node("improvement_validation", improvement_validation)
+workflow.add_node("attempt_verification", attempt_verification)
 workflow.add_node("write_test_file", write_test_file)
-workflow.add_node("write_report_call_states", write_report_call_states)
 workflow.add_node("execute_test_files", execute_test_files)
 
 workflow.add_edge(START, "get_context")
-workflow.add_edge("get_context", "send_context")
+workflow.add_conditional_edges(
+    "get_context",
+    get_context_decision,
+    {
+        "send_context": "send_context",
+        END: END,
+    },
+)
+
 workflow.add_edge("send_context", "llm_call")
 workflow.add_conditional_edges(
     "llm_call",
     llm_call_decision,
     {
-        "structural_validation": "structural_validation",
-        "send_context": "send_context",
-        "write_report_call_states": "write_report_call_states",
+        "cleaning_validation": "cleaning_validation",
+        END: END,
+    }
+)
+
+workflow.add_conditional_edges(
+    "cleaning_validation",
+    cleaning_validation_decision,
+    {
+        "parsing_validation": "parsing_validation",
+        "attempt_verification": "attempt_verification",
     },
 )
 workflow.add_conditional_edges(
-    "structural_validation",
-    structural_validation_decision,
+    "parsing_validation",
+    parsing_validation_decision,
     {
+        END: END,
         "compilation_validation": "compilation_validation",
-        "llm_call": "llm_call",
+        "attempt_verification": "attempt_verification",
     },
 )
 workflow.add_conditional_edges(
     "compilation_validation",
     compilation_validation_decision,
     {
-        "improvement_validation": "improvement_validation",
-        "llm_call": "llm_call",
+        END: END,
+        "write_test_file": "write_test_file",
+        "attempt_verification": "attempt_verification",
     },
 )
-workflow.add_edge("improvement_validation", "write_test_file")
+workflow.add_conditional_edges(
+    "attempt_verification",
+    attempt_verification,
+    {
+        "llm_call": "llm_call",
+        "write_test_file": "write_test_file",
+    },
+)
 
 workflow.add_conditional_edges(
     "write_test_file",
     should_continue,
     {
         "send_context": "send_context",
-        "write_report_call_states": "write_report_call_states",
+        "execute_test_files": "execute_test_files",
     }
 )
 
-workflow.add_edge("write_report_call_states", "execute_test_files")
 workflow.add_edge("execute_test_files", END)
 
 app = workflow.compile()
@@ -1181,4 +605,9 @@ def run_agent(repo_path: str) -> dict:
 
 if __name__ == "__main__":
     result = run_agent(repo_path=".")
-    print_test_execution_output(result)
+    if(result.get("exception_occurred", False)):
+        print("The program execution was interrupted due to an exception.\n")
+        print(f"Exception: {result.get('exception_message', 'Unknown error')}")
+    else:
+        write_report_call_states(result)
+        print_test_execution_output(result)
