@@ -9,11 +9,6 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 
-class SourceFile(TypedDict):
-    file_name: str
-    file_content: str
-
-
 def git(repo_path: str, *args: str) -> str:
     """
     Ejecuta un comando git dentro del repositorio.
@@ -73,7 +68,7 @@ def build_test_context(
     modified_file_name: str,
     modified_file_content: str,
     modified_file_changes: str,
-    dependencies: list[SourceFile],
+    dependencies: list[tuple[str, str]] | None,
     test_file_name: str | None,
     test_file_content: str | None,
 ) -> str:
@@ -81,8 +76,8 @@ def build_test_context(
     dependency_lines = []
     if dependencies:
         for dependency in dependencies:
-            dependency_name = dependency.get("file_name", "<unknown>")
-            dependency_content = dependency.get("file_content", "")
+            dependency_name = dependency[0]
+            dependency_content = dependency[1]
             dependency_lines.append(f"- {dependency_name}")
             if dependency_content and dependency_content.strip():
                 dependency_lines.append("  Content:")

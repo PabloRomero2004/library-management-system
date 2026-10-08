@@ -19,7 +19,6 @@ from langchain_core.messages import HumanMessage
 
 if __package__:
     from .auxiliary_functions import (
-        SourceFile,
         build_test_context,
         clean_java_output,
         compile_generated_test,
@@ -35,7 +34,6 @@ if __package__:
     )
 else:
     from auxiliary_functions import (
-        SourceFile,
         build_test_context,
         clean_java_output,
         compile_generated_test,
@@ -55,7 +53,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(REPO_ROOT / ".env")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-    
+
+class SourceFile(TypedDict):
+    file_name: str
+    file_content: str
+
 class ModifiedFile(TypedDict):
     modified_file_name: str
     modified_file_content: str
