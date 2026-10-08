@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, TypedDict
+
+from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
+from langchain.messages import HumanMessage
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / ".env")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 
 def git(repo_path: str, *args: str) -> str:
@@ -68,7 +75,7 @@ def build_test_context(
     modified_file_name: str,
     modified_file_content: str,
     modified_file_changes: str,
-    dependencies: list[tuple[str, str]] | None,
+    dependencies: list[dict[str, str]] | None,
     test_file_name: str | None,
     test_file_content: str | None,
 ) -> str:
@@ -76,8 +83,8 @@ def build_test_context(
     dependency_lines = []
     if dependencies:
         for dependency in dependencies:
-            dependency_name = dependency[0]
-            dependency_content = dependency[1]
+            dependency_name = dependency["file_name"]
+            dependency_content = dependency["file_content"]
             dependency_lines.append(f"- {dependency_name}")
             if dependency_content and dependency_content.strip():
                 dependency_lines.append("  Content:")
@@ -248,10 +255,10 @@ def get_dependencies(repo_path: str, file_name: str) -> tuple[list[str], bool, s
     repo = Path(repo_path).resolve()
     target_path = repo / file_name
     source_root = repo / "src" / "main"
-    error_occurred = False
-    error_message = ""
+    exception_occurred = False
+    exception_message = ""
     if not target_path.exists() or target_path.suffix != ".java" or not source_root.exists():
-        return [], error_occurred, error_message
+        return [], exception_occurred, exception_message
 
     project_files = list(source_root.rglob("*.java"))
     by_qualified_name = {}
@@ -273,8 +280,8 @@ def get_dependencies(repo_path: str, file_name: str) -> tuple[list[str], bool, s
         try:
             type_names = _get_ast_dependency_metadata(repo, current_path)
         except (Exception) as e:
-            error_occurred = True
-            error_message = f"Error al analizar dependencias para {current_path}: {str(e)}"
+            exception_occurred = True
+            exception_message = f"Error al analizar dependencias para {current_path}: {str(e)}"
             continue
 
         direct_dependencies: set[Path] = set()
@@ -290,14 +297,66 @@ def get_dependencies(repo_path: str, file_name: str) -> tuple[list[str], bool, s
             dependencies.add(dependency_name)
             pending.append(dependency_path)
 
-    return sorted(dependencies), error_occurred, error_message
+    return sorted(dependencies), exception_occurred, exception_message
+
+def load_api_key() -> str:
+    """Lee la API key desde la variable global cargada del .env."""
+    if not GEMINI_API_KEY:
+        raise RuntimeError("No se encontró ninguna API key. Define GEMINI_API_KEY o GOOGLE_API_KEY en el archivo .env del repositorio.")
+    return GEMINI_API_KEY
 
 
+def get_llm_response(prompt: str, info_source: str | None, error_message: str | None, previous_response: str | None) -> tuple[str | None, bool, str | None]:
+    """Obtiene la respuesta del LLM y maneja posibles errores."""
 
-def clean_java_output(response: str) -> tuple[str, str | None, str | None]:
+    response_text = None
+    exception_occurred = False
+    exception_message = None
+    
+    if error_message:
+            prompt = (
+                f"{prompt}\nReport from the previous attempt:\n{error_message}\nPlease try to generate the test file again, considering the previous error.\n"
+                f"The information source is: {info_source or 'unknown'}.\n"
+                f"Previous response was: {previous_response or 'none'}."
+            )
+
+    try:
+        api_key = load_api_key()
+    except Exception as exc:
+        exception_occurred = True
+        exception_message = f"Error loading the API key: {exc}"
+        return response_text, exception_occurred, exception_message
+
+    try:
+        llm = init_chat_model(
+            model="gemini-2.5-flash",
+            model_provider="google_genai",
+            api_key=api_key,
+            temperature=0.2,
+        )
+        response = llm.invoke([HumanMessage(content=prompt)])
+        response_text = response.content if hasattr(response, "content") else str(response)
+    
+    except Exception as exc:
+        exception_occurred = True
+        exception_message = f"Error al llamar a LangChain: {exc}"
+        return response_text, exception_occurred, exception_message
+
+    return response_text, exception_occurred, exception_message
+
+
+def clean_java_output(response: str) -> tuple[str, str, bool, str | None]:
     """Extrae la región Java de la respuesta y devuelve un posible error."""
+
+    code_region = ""
+    info_source = "cleaner"
+    passed = False
+    error_message = None
+
     if not response.strip():
-        return response, "cleaner", "El output está vacío."
+        passed = False
+        error_message = "Empty llm response."
+        return code_region, info_source, passed, error_message
 
     fenced_block = re.search(r"```[^\r\n]*\r?\n(.*?)\r?\n```", response, re.DOTALL)
     cleaned = fenced_block.group(1).strip() if fenced_block else response.strip()
@@ -306,13 +365,20 @@ def clean_java_output(response: str) -> tuple[str, str | None, str | None]:
 
 
     if not start_match or end_index == -1 or end_index < start_match.start():
-        return "", "cleaner", "La región de código está vacía después de la partición."
+        passed = False
+        error_message ="Code region is empty after partitioning."
+        return code_region, info_source, passed, error_message
 
     code_region = cleaned[start_match.start() : end_index + 1].strip()
     if not code_region:
-        return "", "cleaner", "No se ha encontrado una región de código válida."
+        code_region = ""
+        passed = False
+        error_message = "No valid code region found."
+        return code_region, info_source, passed, error_message
     else:
-        return code_region, "", ""
+        passed = True
+        error_message = None
+        return code_region, info_source, passed, error_message
 
 
 def _ast_validator_java_source() -> str:
@@ -499,22 +565,40 @@ def _run_ast_validator(java_file: Path, repo_path: Path) -> tuple[bool, str]:
     return False, output
 
 
-def validate_generated_test(response: str, repo_path: Path) -> tuple[bool, str, str, bool]:
-    if not response.strip():
-        return False, "AST validator", "No hay código para analizar.", False
+def validate_generated_test(test_code: str, repo_path: Path) -> tuple[str, bool, bool, str]:
+    
+    info_source = "AST validator"
+    passed = False
+    exception_occurred = False
+    message = ""
+    
+    if not test_code.strip():
+        passed = False
+        message = "No hay código para analizar."
+        exception_occurred = False
+        return info_source, passed, exception_occurred, message
 
     with tempfile.TemporaryDirectory() as tmpdir:
         temp_file = Path(tmpdir) / "GeneratedTest.java"
-        temp_file.write_text(response, encoding="utf-8")
+        temp_file.write_text(test_code, encoding="utf-8")
 
         try:
             passed, message = _run_ast_validator(temp_file, repo_path)
         except Exception as exc:
-            return False, "AST validator", f"Error al ejecutar el validador AST: {exc}", True
+            passed = False
+            message = f"Error al ejecutar el validador AST: {exc}"
+            exception_occurred = True
+            return info_source, passed, exception_occurred, message
 
     if not passed:
-        return False, "AST validator", f"AST validation failed: {message}", False
-    return True, "AST validator", "", False
+        passed = False
+        message = f"AST validation failed: {message}"
+        exception_occurred = False
+        return info_source, passed, exception_occurred, message
+    passed = True
+    message = "AST validation passed."
+    exception_occurred = False
+    return info_source, passed, exception_occurred, message
 
 
 def _get_maven_test_classpath(repo_path: Path) -> str:
@@ -546,9 +630,18 @@ def _get_maven_test_classpath(repo_path: Path) -> str:
     return output_path.read_text(encoding="utf-8").strip()
 
 
-def compile_generated_test(response: str, repo_path: Path) -> tuple[bool, str, str, bool]:
-    if not response.strip():
-        return False, "compiler", "No hay código para compilar.", False
+def compile_generated_test(test_code: str, repo_path: Path) -> tuple[str, bool, bool, str]:
+  
+    info_source = "compiler"
+    passed = False
+    exception_occurred = False
+    message = ""
+    
+    if not test_code.strip():
+        passed = False
+        message = "No code to compile."
+        exception_occurred = False
+        return info_source, passed, exception_occurred, message
 
     is_windows = os.name == "nt"
 
@@ -562,12 +655,18 @@ def compile_generated_test(response: str, repo_path: Path) -> tuple[bool, str, s
             shell=is_windows,
         )
     except Exception as exc:
-        return False, "compiler", str(exc), True
+        passed = False
+        exception_occurred = True
+        message = f"Error executing 'mvn compile': {exc}"
+        return info_source, passed, exception_occurred, message
 
     try:
         classpath = _get_maven_test_classpath(repo_path)
     except Exception as exc:
-        return False, "compiler", str(exc), True
+        passed = False
+        exception_occurred = True
+        message = f"Error obtaining Maven classpath: {exc}"
+        return info_source, passed, exception_occurred, message
 
     classpath_parts = [classpath]
     main_classes = repo_path / "target" / "classes"
@@ -577,7 +676,7 @@ def compile_generated_test(response: str, repo_path: Path) -> tuple[bool, str, s
 
     with tempfile.TemporaryDirectory() as tmpdir:
         temp_file = Path(tmpdir) / "GeneratedTest.java"
-        temp_file.write_text(response, encoding="utf-8")
+        temp_file.write_text(test_code, encoding="utf-8")
         out_dir = Path(tmpdir) / "classes"
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -591,9 +690,15 @@ def compile_generated_test(response: str, repo_path: Path) -> tuple[bool, str, s
 
         if result.returncode != 0:
             error_output = result.stderr.strip() or result.stdout.strip()
-            return False, "compiler", f"javac falló: {error_output}", False
-
-    return True, "compiler", "", False
+            passed = False
+            exception_occurred = False
+            message = f"javac failed: {error_output}"
+            return info_source, passed, exception_occurred, message
+        
+    passed = True
+    exception_occurred = False
+    message = "Compilation successful."
+    return info_source, passed, exception_occurred, message
 
 
 
@@ -619,38 +724,22 @@ def build_test_file_path(repo_path: str, modified_file_name: str) -> Path:
 
 def write_test_content(
     repo_path: str,
-    modified_file: dict[str, Any],
-    generated_content: str,
+    test_file_name: str | None,
+    test_file_content: str | None,
+    modified_file_name: str,
+    test_code: str,
 ) -> Path:
     """Escribe el contenido generado y devuelve la ruta del archivo de test."""
-    test_file_name = modified_file.get("test_file_name")
-    test_file_content = modified_file.get("test_file_content")
 
     if test_file_name and str(test_file_name).strip() and test_file_content is not None:
         target_path = Path(repo_path) / test_file_name
     else:
-        target_path = build_test_file_path(repo_path, modified_file.get("modified_file_name", ""))
+        target_path = build_test_file_path(repo_path, modified_file_name)
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(generated_content, encoding="utf-8")
+    target_path.write_text(test_code, encoding="utf-8")
     return target_path
 
-
-def write_run_reports(
-    repo_path: str,
-    report_call_states: list[dict[str, Any]],
-    modified_files: list[dict[str, Any]],
-) -> None:
-    """Guarda en JSON los reportes y archivos modificados de una ejecución."""
-    repo = Path(repo_path)
-    (repo / "report_call_states.json").write_text(
-        json.dumps(report_call_states, indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
-    (repo / "modified_files.json").write_text(
-        json.dumps(modified_files, indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
 
 
 def run_maven_tests(repo_path: str) -> str:

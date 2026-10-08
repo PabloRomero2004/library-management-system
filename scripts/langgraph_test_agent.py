@@ -6,15 +6,10 @@ Ubicación recomendada: scripts/langgraph_test_agent.py
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import TypedDict
 
-from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
-
-from langchain.chat_models import init_chat_model
-from langchain_core.messages import HumanMessage
 
 
 if __package__:
@@ -26,10 +21,10 @@ if __package__:
         get_dependencies,
         get_modified_source_files,
         read_file,
+        get_llm_response,
         run_maven_tests,
         get_source_file_diff,
         validate_generated_test,
-        write_run_reports,
         write_test_content,
     )
 else:
@@ -41,17 +36,12 @@ else:
         get_dependencies,
         get_modified_source_files,
         read_file,
+        get_llm_response,
         run_maven_tests,
         get_source_file_diff,
         validate_generated_test,
-        write_run_reports,
         write_test_content,
     )
-
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(REPO_ROOT / ".env")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 
 class SourceFile(TypedDict):
@@ -173,14 +163,14 @@ def get_context(state: TestAgentState) -> TestAgentState:
         # dependencias
         dependency_objects = []
 
-        dependency_names, error_occurred, error_message = get_dependencies(
+        dependency_names, exception_occurred, exception_message = get_dependencies(
             state["repo_path"],
             file_name,
         )
 
-        if error_occurred:
+        if exception_occurred:
             state["exception_occurred"] = True
-            state["exception_message"] = error_message
+            state["exception_message"] = exception_message
             return state
 
         for dependency in dependency_names:
@@ -276,12 +266,6 @@ def send_context(state: TestAgentState) -> TestAgentState:
     return state
 
 
-def load_api_key() -> str:
-    """Lee la API key desde la variable global cargada del .env."""
-    if not GEMINI_API_KEY:
-        raise RuntimeError("No se encontró ninguna API key. Define GEMINI_API_KEY o GOOGLE_API_KEY en el archivo .env del repositorio.")
-    return GEMINI_API_KEY
-
 
 def llm_call(state: TestAgentState) -> TestAgentState:
     """Invoca al modelo Gemini con la variable de estado context como prompt."""
@@ -296,32 +280,12 @@ def llm_call(state: TestAgentState) -> TestAgentState:
 
     report = state.get("report_call_state", None)
 
-    if report:
-        prompt = (
-            f"{prompt}\nReport from the previous attempt:\n{json.dumps(report, ensure_ascii=True)}"
-        )
-
-    try:
-        api_key = load_api_key()
-    except Exception as exc:
-        state["exception_occurred"] = True
-        state["exception_message"] = f"Error al cargar la API key: {exc}"
-        return state
-
-    try:
-        llm = init_chat_model(
-            model="gemini-2.5-flash",
-            model_provider="google_genai",
-            api_key=api_key,
-            temperature=0.2,
-        )
-        response = llm.invoke([HumanMessage(content=prompt)])
-        response_text = response.content if hasattr(response, "content") else str(response)
-        state["llm_response"] = response_text
-
-    except Exception as exc:
-        state["exception_occurred"] = True
-        state["exception_message"] = f"Error al llamar a LangChain: {exc}"
+    llm_response, exception_occurred, exception_message = get_llm_response(prompt, report.get("information_source", None), report.get("description", None), report.get("generated_test", None))
+    
+    state["llm_response"] = llm_response
+    state["exception_occurred"] = exception_occurred
+    state["exception_message"] = exception_message
+    
 
     state["attempts"] = int(state.get("attempts", 0)) + 1
 
@@ -334,16 +298,16 @@ def cleaning_validation(state: TestAgentState) -> TestAgentState:
     state["cleaning_passed"] = False
 
     if not state.get("exception_occurred"):
-        cleaned, source, error = clean_java_output(state.get("llm_response", "") or "")
-        if error:
+        cleaned_code, info_source, passed, error_message = clean_java_output(state.get("llm_response", "") or "")
+        if not passed:
             add_report(
                 state,
-                source,
-                error
+                info_source,
+                error_message
             )
         else:
             state["cleaning_passed"] = True
-            state["llm_response"] = cleaned
+            state["llm_response"] = cleaned_code
         
     return state
 
@@ -352,14 +316,14 @@ def parsing_validation(state: TestAgentState) -> TestAgentState:
     """Valida el formato generado y su estructura Java mediante AST."""
     state["ast_parsing_passed"] = False
 
-    passed, source, error, execution_failed = validate_generated_test(
+    info_source, passed, exception_occurred, message = validate_generated_test(
         state.get("llm_response", "") or "",
         Path(state["repo_path"]),
     )
 
-    if execution_failed:
+    if exception_occurred:
         state["exception_occurred"] = True
-        state["exception_message"] = f"Error al ejecutar el validador AST: {error}"
+        state["exception_message"] = f"Error al ejecutar el validador AST: {message}"
         return state
 
     if passed:
@@ -367,8 +331,8 @@ def parsing_validation(state: TestAgentState) -> TestAgentState:
     else:
         add_report(
             state,
-            source,
-            error,
+            info_source,
+            message,
         )
 
     return state
@@ -377,13 +341,13 @@ def parsing_validation(state: TestAgentState) -> TestAgentState:
 def compilation_validation(state: TestAgentState) -> TestAgentState:
     """Valida que el test generado compile con el proyecto y sus dependencias."""
     state["compiler_passed"] = False
-    passed, source, error, execution_failed = compile_generated_test(
+    info_source, passed, exception_occurred, message = compile_generated_test(
         state.get("llm_response", "") or "",
         Path(state["repo_path"]),
     )
-    if execution_failed:
+    if exception_occurred:
         state["exception_occurred"] = True
-        state["exception_message"] = f"Error al ejecutar el compilador: {error}"
+        state["exception_message"] = f"Error al ejecutar el compilador: {message}"
         return state
 
     if passed:
@@ -391,8 +355,8 @@ def compilation_validation(state: TestAgentState) -> TestAgentState:
     else:
         add_report(
             state,
-            source,
-            error
+            info_source,
+            message,
         )
     return state
 
@@ -409,9 +373,9 @@ def write_test_file(state: TestAgentState) -> TestAgentState:
 
     if validation_passed:
         modified_file = modified_files[current_file_ind]
-        generated_content = state.get("llm_response", "") or ""
-        write_test_content(state.get("repo_path", "."), modified_file, generated_content)
-        modified_file["written_test_file"] = generated_content
+        test_code = state.get("llm_response", "") or ""
+        write_test_content(state.get("repo_path", "."), modified_file.get("test_file_name"), modified_file.get("test_file_content"), modified_file.get("modified_file_name", ""), test_code)
+        modified_file["written_test_file"] = test_code
         
     else:
         modified_file["written_test_file"] = "No test file written due to validation errors."
@@ -471,21 +435,21 @@ def should_continue(state: TestAgentState) -> str:
 def cleaning_validation_decision(state: TestAgentState) -> str:
     if state.get("cleaning_passed"):
         return "parsing_validation"
-    return "attempt_verification"
+    return attempt_verification(state)
 
 def parsing_validation_decision(state: TestAgentState) -> str:
     if state.get("exception_occurred"):
         return END
     if state.get("ast_parsing_passed"):
         return "compilation_validation"
-    return "attempt_verification"
+    return attempt_verification(state)
 
 def compilation_validation_decision(state: TestAgentState) -> str:
     if state.get("exception_occurred"):
         return END
     if state.get("compiler_passed"):
         return "write_test_file"
-    return "attempt_verification"
+    return attempt_verification(state)
 
 
 def attempt_verification(state: TestAgentState) -> str:
@@ -501,11 +465,20 @@ def attempt_verification(state: TestAgentState) -> str:
 
 def write_report_call_states(result: dict) -> None:
     """Guarda todos los reportes generados durante la ejecución."""
-    write_run_reports(
-        result.get("repo_path", "."),
-        result.get("report_call_states", []),
-        result.get("modified_files", []),
+    
+    repo_path = Path(result.get("repo_path", "."))
+    report_call_states = result.get("report_call_states", [])
+    modified_files = result.get("modified_files", [])
+
+    (repo_path / "report_call_states.json").write_text(
+            json.dumps(report_call_states, indent=2, ensure_ascii=True),
+            encoding="utf-8",
+        )
+    (repo_path / "modified_files.json").write_text(
+        json.dumps(modified_files, indent=2, ensure_ascii=True),
+        encoding="utf-8",
     )
+
 
 
 def print_test_execution_output(result: dict) -> None:
@@ -525,7 +498,6 @@ workflow.add_node("llm_call", llm_call)
 workflow.add_node("cleaning_validation", cleaning_validation)
 workflow.add_node("parsing_validation", parsing_validation)
 workflow.add_node("compilation_validation", compilation_validation)
-workflow.add_node("attempt_verification", attempt_verification)
 workflow.add_node("write_test_file", write_test_file)
 workflow.add_node("execute_test_files", execute_test_files)
 
@@ -554,7 +526,8 @@ workflow.add_conditional_edges(
     cleaning_validation_decision,
     {
         "parsing_validation": "parsing_validation",
-        "attempt_verification": "attempt_verification",
+        "llm_call": "llm_call",
+        "write_test_file": "write_test_file",
     },
 )
 workflow.add_conditional_edges(
@@ -563,7 +536,8 @@ workflow.add_conditional_edges(
     {
         END: END,
         "compilation_validation": "compilation_validation",
-        "attempt_verification": "attempt_verification",
+        "llm_call": "llm_call",
+        "write_test_file": "write_test_file",
     },
 )
 workflow.add_conditional_edges(
@@ -572,15 +546,7 @@ workflow.add_conditional_edges(
     {
         END: END,
         "write_test_file": "write_test_file",
-        "attempt_verification": "attempt_verification",
-    },
-)
-workflow.add_conditional_edges(
-    "attempt_verification",
-    attempt_verification,
-    {
         "llm_call": "llm_call",
-        "write_test_file": "write_test_file",
     },
 )
 
