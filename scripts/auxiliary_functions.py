@@ -6,16 +6,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from dotenv import load_dotenv
-from langchain.chat_models import init_chat_model
-from langchain.messages import HumanMessage
-
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(REPO_ROOT / ".env")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-
-
 def git(repo_path: str, *args: str) -> str:
     """
     Ejecuta un comando git dentro del repositorio.
@@ -70,67 +60,6 @@ def get_source_file_diff(repo_path: str, file_name: str) -> str:
     """Obtiene el diff de un archivo entre HEAD~1 y HEAD."""
     return git(repo_path, "diff", "HEAD~1", "HEAD", "--", file_name)
 
-
-def build_test_context(
-    modified_file_name: str,
-    modified_file_content: str,
-    modified_file_changes: str,
-    dependencies: list[dict[str, str]] | None,
-    test_file_name: str | None,
-    test_file_content: str | None,
-) -> str:
-    """Construye el prompt de generación de tests a partir del contexto del archivo."""
-    dependency_lines = []
-    if dependencies:
-        for dependency in dependencies:
-            dependency_name = dependency["file_name"]
-            dependency_content = dependency["file_content"]
-            dependency_lines.append(f"- {dependency_name}")
-            if dependency_content and dependency_content.strip():
-                dependency_lines.append("  Content:")
-                for line in dependency_content.splitlines():
-                    dependency_lines.append(f"    {line}")
-            else:
-                dependency_lines.append("  Content: <empty file>")
-    else:
-        dependency_lines.append("- No dependencies found.")
-
-    test_name_text = test_file_name or "No test file found."
-    test_content_text = (
-        test_file_content
-        if test_file_content and test_file_content.strip()
-        else "No test file content found."
-    )
-
-    context_lines = [
-        "You are an automated test generator for modified files.",
-        "Your job is to inspect the modified file, its changes, its dependencies, and any existing test file, then produce the final content of a test file.",
-        "Return only the final content of a test file, including imports and package declarations, and nothing else.",
-        "",
-        "Modified file name:",
-        modified_file_name,
-        "",
-        "Modified file content:",
-        modified_file_content or "<empty file>",
-        "",
-        "Changes for this file:",
-        modified_file_changes or "No changes detected.",
-        "",
-        "Dependencies:",
-        *dependency_lines,
-        "",
-        "Associated test file name:",
-        test_name_text,
-        "",
-        "Associated test file content:",
-        test_content_text,
-        "",
-        "Instructions:",
-        "- If a test file already exists, use its content as a base and add the new tests required to validate the recent code changes.",
-        "- If no test file exists, create a complete test file content that covers the new changes.",
-        "- The final result must be only a test file content (with imports and package declarations included) and no extra commentary.",
-    ]
-    return "\n".join(context_lines)
 
 
 def find_test_file(repo_path: str, source_file: str) -> Path | None:
@@ -298,52 +227,6 @@ def get_dependencies(repo_path: str, file_name: str) -> tuple[list[str], bool, s
             pending.append(dependency_path)
 
     return sorted(dependencies), exception_occurred, exception_message
-
-def load_api_key() -> str:
-    """Lee la API key desde la variable global cargada del .env."""
-    if not GEMINI_API_KEY:
-        raise RuntimeError("No se encontró ninguna API key. Define GEMINI_API_KEY o GOOGLE_API_KEY en el archivo .env del repositorio.")
-    return GEMINI_API_KEY
-
-
-def get_llm_response(prompt: str, info_source: str | None, error_message: str | None, previous_response: str | None) -> tuple[str | None, bool, str | None]:
-    """Obtiene la respuesta del LLM y maneja posibles errores."""
-
-    response_text = None
-    exception_occurred = False
-    exception_message = None
-    
-    if error_message:
-            prompt = (
-                f"{prompt}\nReport from the previous attempt:\n{error_message}\nPlease try to generate the test file again, considering the previous error.\n"
-                f"The information source is: {info_source or 'unknown'}.\n"
-                f"Previous response was: {previous_response or 'none'}."
-            )
-
-    try:
-        api_key = load_api_key()
-    except Exception as exc:
-        exception_occurred = True
-        exception_message = f"Error loading the API key: {exc}"
-        return response_text, exception_occurred, exception_message
-
-    try:
-        llm = init_chat_model(
-            model="gemini-2.5-flash",
-            model_provider="google_genai",
-            api_key=api_key,
-            temperature=0.2,
-        )
-        response = llm.invoke([HumanMessage(content=prompt)])
-        response_text = response.content if hasattr(response, "content") else str(response)
-    
-    except Exception as exc:
-        exception_occurred = True
-        exception_message = f"Error al llamar a LangChain: {exc}"
-        return response_text, exception_occurred, exception_message
-
-    return response_text, exception_occurred, exception_message
-
 
 def clean_java_output(response: str) -> tuple[str, str, bool, str | None]:
     """Extrae la región Java de la respuesta y devuelve un posible error."""

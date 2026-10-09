@@ -6,22 +6,30 @@ Ubicación recomendada: scripts/langgraph_test_agent.py
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
+from langchain.messages import HumanMessage
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / ".env")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
 
 if __package__:
     from .auxiliary_functions import (
-        build_test_context,
         clean_java_output,
         compile_generated_test,
         find_test_file,
         get_dependencies,
         get_modified_source_files,
         read_file,
-        get_llm_response,
         run_maven_tests,
         get_source_file_diff,
         validate_generated_test,
@@ -29,14 +37,12 @@ if __package__:
     )
 else:
     from auxiliary_functions import (
-        build_test_context,
         clean_java_output,
         compile_generated_test,
         find_test_file,
         get_dependencies,
         get_modified_source_files,
         read_file,
-        get_llm_response,
         run_maven_tests,
         get_source_file_diff,
         validate_generated_test,
@@ -62,7 +68,7 @@ class Report(TypedDict):
     description: str
     generated_test: str
 
-class TestAgentState(TypedDict, total=False):
+class TestFlowState(TypedDict, total=False):
     repo_path: str
     modified_files: list[ModifiedFile]
     modified_files_count: int
@@ -82,7 +88,7 @@ class TestAgentState(TypedDict, total=False):
 
 
 
-def reset_file_iteration_state(state: TestAgentState) -> None:
+def reset_file_iteration_state(state: TestFlowState) -> None:
     state["attempts"] = 0
     state["context"] = ""
     state["llm_response"] = ""
@@ -96,13 +102,13 @@ def reset_file_iteration_state(state: TestAgentState) -> None:
     }
 
 
-def advance_to_next_file(state: TestAgentState) -> None:
+def advance_to_next_file(state: TestFlowState) -> None:
     state["current_file_ind"] = int(state.get("current_file_ind", 0)) + 1
     reset_file_iteration_state(state)
 
 
 def add_report(
-    state: TestAgentState,
+    state: TestFlowState,
     information_source: str,
     description: str,
 ) -> None:
@@ -118,7 +124,7 @@ def add_report(
 
 
 
-def get_context(state: TestAgentState) -> TestAgentState:
+def get_context(state: TestFlowState) -> TestFlowState:
 
     repo = Path(state["repo_path"])
 
@@ -229,7 +235,7 @@ def get_context(state: TestAgentState) -> TestAgentState:
     return state
 
 
-def send_context(state: TestAgentState) -> TestAgentState:
+def send_context(state: TestFlowState) -> TestFlowState:
     """
     Prepara el contexto en inglés para el fichero modificado actual.
     """
@@ -254,20 +260,71 @@ def send_context(state: TestAgentState) -> TestAgentState:
     test_file_name = modified_file.get("test_file_name")
     test_file_content = modified_file.get("test_file_content")
 
-    state["context"] = build_test_context(
-        modified_file_name=modified_file_name,
-        modified_file_content=modified_file_content,
-        modified_file_changes=modified_file_changes,
-        dependencies=dependencies,
-        test_file_name=test_file_name,
-        test_file_content=test_file_content,
+    dependency_lines = []
+    if dependencies:
+        for dependency in dependencies:
+            dependency_name = dependency["file_name"]
+            dependency_content = dependency["file_content"]
+            dependency_lines.append(f"- {dependency_name}")
+            if dependency_content and dependency_content.strip():
+                dependency_lines.append("  Content:")
+                for line in dependency_content.splitlines():
+                    dependency_lines.append(f"    {line}")
+            else:
+                dependency_lines.append("  Content: <empty file>")
+    else:
+        dependency_lines.append("- No dependencies found.")
+    
+    test_name_text = test_file_name or "No test file found."
+    test_content_text = (
+        test_file_content
+        if test_file_content and test_file_content.strip()
+        else "No test file content found."
     )
+    
+    context_lines = [
+        "You are an automated test generator for modified files.",
+        "Your job is to inspect the modified file, its changes, its dependencies, and any existing test file, then produce the final content of a test file.",
+        "Return only the final content of a test file, including imports and package declarations, and nothing else.",
+        "",
+        "Modified file name:",
+        modified_file_name,
+        "",
+        "Modified file content:",
+        modified_file_content or "<empty file>",
+        "",
+        "Changes for this file:",
+        modified_file_changes or "No changes detected.",
+        "",
+        "Dependencies:",
+        *dependency_lines,
+        "",
+        "Associated test file name:",
+        test_name_text,
+        "",
+        "Associated test file content:",
+        test_content_text,
+        "",
+        "Instructions:",
+        "- If a test file already exists, use its content as a base and add the new tests required to validate the recent code changes.",
+        "- If no test file exists, create a complete test file content that covers the new changes.",
+        "- The final result must be only a test file content (with imports and package declarations included) and no extra commentary.",
+    ]
+        
+
+    state["context"] = "\n".join(context_lines)
 
     return state
 
 
+def load_api_key() -> str:
+    """Lee la API key desde la variable global cargada del .env."""
+    if not GEMINI_API_KEY:
+        raise RuntimeError("No se encontró ninguna API key. Define GEMINI_API_KEY o GOOGLE_API_KEY en el archivo .env del repositorio.")
+    return GEMINI_API_KEY
 
-def llm_call(state: TestAgentState) -> TestAgentState:
+
+def llm_call(state: TestFlowState) -> TestFlowState:
     """Invoca al modelo Gemini con la variable de estado context como prompt."""
     state["exception_occurred"] = False
     state["exception_message"] = ""
@@ -280,12 +337,41 @@ def llm_call(state: TestAgentState) -> TestAgentState:
 
     report = state.get("report_call_state", None)
 
-    llm_response, exception_occurred, exception_message = get_llm_response(prompt, report.get("information_source", None), report.get("description", None), report.get("generated_test", None))
+    if report and report.get("description"):
+        prompt = (
+            f"{prompt}\n\nPrevious generated test:\n"
+            f"{report.get('generated_test', '')}\n\nInformation source:\n"
+            f"{report.get('information_source', '')}\nError message:\n"
+            f"{report.get('description', '')}"
+        )
+
+    try:
+        api_key = load_api_key()
+    except Exception as exc:
+        state["exception_occurred"] = True
+        state["exception_message"] = f"Error loading the API key: {exc}"
+        return state
     
-    state["llm_response"] = llm_response
-    state["exception_occurred"] = exception_occurred
-    state["exception_message"] = exception_message
-    
+    try:
+        llm = init_chat_model(
+            model="gemini-2.5-flash",
+            model_provider="google_genai",
+            api_key=api_key,
+            temperature=0.2,
+        )
+        response = llm.invoke([HumanMessage(content=prompt)])
+        response_text = (
+            response.content
+            if isinstance(response.content, str)
+            else str(response)
+        )
+
+    except Exception as exc:
+        state["exception_occurred"] = True
+        state["exception_message"] = f"Error calling LangChain: {exc}"
+        return state
+
+    state["llm_response"] = response_text
 
     state["attempts"] = int(state.get("attempts", 0)) + 1
 
@@ -293,7 +379,7 @@ def llm_call(state: TestAgentState) -> TestAgentState:
 
 
 
-def cleaning_validation(state: TestAgentState) -> TestAgentState:
+def cleaning_validation(state: TestFlowState) -> TestFlowState:
     """Limpia el output de posible texto adicional o Markdown y comprueba que haya código Java y se queda solo con ese código."""
     state["cleaning_passed"] = False
 
@@ -312,7 +398,7 @@ def cleaning_validation(state: TestAgentState) -> TestAgentState:
     return state
 
 
-def parsing_validation(state: TestAgentState) -> TestAgentState:
+def parsing_validation(state: TestFlowState) -> TestFlowState:
     """Valida el formato generado y su estructura Java mediante AST."""
     state["ast_parsing_passed"] = False
 
@@ -338,7 +424,7 @@ def parsing_validation(state: TestAgentState) -> TestAgentState:
     return state
 
 
-def compilation_validation(state: TestAgentState) -> TestAgentState:
+def compilation_validation(state: TestFlowState) -> TestFlowState:
     """Valida que el test generado compile con el proyecto y sus dependencias."""
     state["compiler_passed"] = False
     info_source, passed, exception_occurred, message = compile_generated_test(
@@ -362,7 +448,7 @@ def compilation_validation(state: TestAgentState) -> TestAgentState:
 
 
 
-def write_test_file(state: TestAgentState) -> TestAgentState:
+def write_test_file(state: TestFlowState) -> TestFlowState:
     """Nodo que delega la escritura y conserva aquí las mutaciones del estado."""
     modified_files = state.get("modified_files", [])
     current_file_ind = int(state.get("current_file_ind", 0))
@@ -386,13 +472,13 @@ def write_test_file(state: TestAgentState) -> TestAgentState:
 
 
 
-def execute_test_files(state: TestAgentState) -> TestAgentState:
+def execute_test_files(state: TestFlowState) -> TestFlowState:
     """Nodo que ejecuta la operación auxiliar y almacena su resultado."""
     state["test_execution_output"] = run_maven_tests(state.get("repo_path", "."))
     return state
 
 
-def get_context_decision(state: TestAgentState) -> str:
+def get_context_decision(state: TestFlowState) -> str:
     """
     Determina si se debe proceder a enviar el contexto al LLM o si se debe pasar al siguiente archivo.
     """
@@ -404,7 +490,7 @@ def get_context_decision(state: TestAgentState) -> str:
     return "send_context"
 
 
-def llm_call_decision(state: TestAgentState) -> str:
+def llm_call_decision(state: TestFlowState) -> str:
     """
     Determina si se debe proceder a la validación o si se debe intentar otra llamada al LLM.
     """
@@ -417,7 +503,7 @@ def llm_call_decision(state: TestAgentState) -> str:
 
 
 
-def should_continue(state: TestAgentState) -> str:
+def should_continue(state: TestFlowState) -> str:
     """
     Determina si quedan más archivos modificados por procesar o 
     si se debe proceder a ejecutar los tests.
@@ -432,19 +518,19 @@ def should_continue(state: TestAgentState) -> str:
 
 
 
-def cleaning_validation_decision(state: TestAgentState) -> str:
+def cleaning_validation_decision(state: TestFlowState) -> str:
     if state.get("cleaning_passed"):
         return "parsing_validation"
     return attempt_verification(state)
 
-def parsing_validation_decision(state: TestAgentState) -> str:
+def parsing_validation_decision(state: TestFlowState) -> str:
     if state.get("exception_occurred"):
         return END
     if state.get("ast_parsing_passed"):
         return "compilation_validation"
     return attempt_verification(state)
 
-def compilation_validation_decision(state: TestAgentState) -> str:
+def compilation_validation_decision(state: TestFlowState) -> str:
     if state.get("exception_occurred"):
         return END
     if state.get("compiler_passed"):
@@ -452,7 +538,7 @@ def compilation_validation_decision(state: TestAgentState) -> str:
     return attempt_verification(state)
 
 
-def attempt_verification(state: TestAgentState) -> str:
+def attempt_verification(state: TestFlowState) -> str:
     """
     Determina si se debe intentar otra llamada al LLM o si se debe pasar al siguiente archivo.
     """
@@ -491,7 +577,7 @@ def print_test_execution_output(result: dict) -> None:
         print("No se ejecutaron las pruebas Maven.")
 
 
-workflow = StateGraph(TestAgentState)
+workflow = StateGraph(TestFlowState)
 workflow.add_node("get_context", get_context)
 workflow.add_node("send_context", send_context)
 workflow.add_node("llm_call", llm_call)
