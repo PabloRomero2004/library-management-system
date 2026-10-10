@@ -34,6 +34,7 @@ if __package__:
         get_source_file_diff,
         validate_generated_test,
         write_test_content,
+        get_docs_context
     )
 else:
     from auxiliary_functions import (
@@ -47,6 +48,7 @@ else:
         get_source_file_diff,
         validate_generated_test,
         write_test_content,
+        get_docs_context
     )
 
 
@@ -351,7 +353,17 @@ def llm_call(state: TestFlowState) -> TestFlowState:
         state["exception_occurred"] = True
         state["exception_message"] = f"Error loading the API key: {exc}"
         return state
-    
+
+    try:
+        docs_context = get_docs_context(prompt, api_key)
+    except Exception as exc:
+        state["exception_occurred"] = True
+        state["exception_message"] = f"Error fetching documentation context: {exc}"
+        return state
+
+    if docs_context:
+        prompt = f"{prompt}\n\nDocumentation context:\n{docs_context}"
+
     try:
         llm = init_chat_model(
             model="gemini-2.5-flash",

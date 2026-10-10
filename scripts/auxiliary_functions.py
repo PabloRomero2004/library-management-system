@@ -4,7 +4,17 @@ import os
 import re
 import subprocess
 import tempfile
+import textwrap
+from functools import lru_cache
 from pathlib import Path
+
+from langchain_core.documents import Document
+from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def git(repo_path: str, *args: str) -> str:
     """
@@ -227,6 +237,125 @@ def get_dependencies(repo_path: str, file_name: str) -> tuple[list[str], bool, s
             pending.append(dependency_path)
 
     return sorted(dependencies), exception_occurred, exception_message
+
+
+def load_and_split_markdown_files(
+    docs_path: Path,
+    chunk_size: int = 1200,
+) -> list[Document]:
+    """Lee Markdown y los divide en fragmentos que conservan título y fuente."""
+    if not docs_path.is_dir():
+        raise FileNotFoundError(f"Documentation directory not found: {docs_path}")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero.")
+
+    documents: list[Document] = []
+    heading_pattern = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+
+    for markdown_path in sorted(docs_path.rglob("*.md")):
+        content = read_file(markdown_path)
+        if not content.strip():
+            continue
+
+        section = "Introduction"
+        section_parts: list[str] = []
+
+        def add_section_documents() -> None:
+            section_text = "\n\n".join(section_parts).strip()
+            if not section_text:
+                return
+
+            chunks: list[str] = []
+            current_chunk = ""
+            for paragraph in re.split(r"\n\s*\n", section_text):
+                paragraph = paragraph.strip()
+                if not paragraph:
+                    continue
+
+                if len(paragraph) > chunk_size:
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                        current_chunk = ""
+                    chunks.extend(
+                        textwrap.wrap(
+                            paragraph,
+                            width=chunk_size,
+                            break_long_words=True,
+                            break_on_hyphens=False,
+                        )
+                    )
+                    continue
+
+                candidate = f"{current_chunk}\n\n{paragraph}".strip()
+                if current_chunk and len(candidate) > chunk_size:
+                    chunks.append(current_chunk)
+                    current_chunk = paragraph
+                else:
+                    current_chunk = candidate
+
+            if current_chunk:
+                chunks.append(current_chunk)
+
+            source = markdown_path.relative_to(docs_path).as_posix()
+            documents.extend(
+                Document(
+                    page_content=chunk,
+                    metadata={"source": source, "section": section},
+                )
+                for chunk in chunks
+            )
+
+        for line in content.splitlines():
+            heading_match = heading_pattern.match(line)
+            if heading_match:
+                add_section_documents()
+                section = heading_match.group(1).strip()
+                section_parts = [line]
+            else:
+                section_parts.append(line)
+
+        add_section_documents()
+
+    return documents
+
+
+@lru_cache(maxsize=1)
+def get_docs_vector_store(api_key: str) -> InMemoryVectorStore:
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="gemini-embedding-001",
+        api_key=api_key,
+    )
+
+    documents = load_and_split_markdown_files(REPO_ROOT / "docs")
+    if not documents:
+        raise RuntimeError("No Markdown documents found under docs/.")
+
+    store = InMemoryVectorStore(embeddings)
+    store.add_documents(documents)
+    return store
+
+
+
+def get_docs_context(context_prompt: str, api_key: str) -> str | None:
+    store = get_docs_vector_store(api_key)
+    matches = store.similarity_search(context_prompt, k=5)
+
+    if not matches:
+        return None
+
+    excerpts = "\n\n".join(
+        f"Source: {doc.metadata['source']} — {doc.metadata['section']}\n"
+        f"{doc.page_content}"
+        for doc in matches
+    )
+
+    return (
+        "Relevant documentation excerpts (use only when applicable; "
+        "do not invent behavior unsupported by the code):\n"
+        f"{excerpts}"
+    )
+
+
 
 def clean_java_output(response: str) -> tuple[str, str, bool, str | None]:
     """Extrae la región Java de la respuesta y devuelve un posible error."""
