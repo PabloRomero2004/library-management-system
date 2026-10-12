@@ -1,0 +1,52 @@
+-------------------------------------------------------------------------------
+Test set: model.BookListTest
+-------------------------------------------------------------------------------
+Tests run: 41, Failures: 4, Errors: 0, Skipped: 0, Time elapsed: 0.329 s <<< FAILURE! -- in model.BookListTest
+model.BookListTest.testIsEmptyWhenEmpty -- Time elapsed: 0.007 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: isEmpty should return true for an empty list ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:63)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:36)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:210)
+	at model.BookListTest.testIsEmptyWhenEmpty(BookListTest.java:550)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+
+model.BookListTest.testIsEmptyWhenNotEmpty -- Time elapsed: 0.006 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: isEmpty should return false for a non-empty list ==> expected: <false> but was: <true>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertFalse.failNotFalse(AssertFalse.java:63)
+	at org.junit.jupiter.api.AssertFalse.assertFalse(AssertFalse.java:36)
+	at org.junit.jupiter.api.Assertions.assertFalse(Assertions.java:235)
+	at model.BookListTest.testIsEmptyWhenNotEmpty(BookListTest.java:560)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+
+model.BookListTest.testRemoveExistingBook -- Time elapsed: 0.012 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: removeBook should return true if the book was successfully removed ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:63)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:36)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:210)
+	at model.BookListTest.testRemoveExistingBook(BookListTest.java:221)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+
+model.BookListTest.testGetBooksReturnsDefensiveCopy -- Time elapsed: 0.003 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: Modifying the list returned by getBooks should not affect the internal list ==> expected: <1> but was: <2>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:559)
+	at model.BookListTest.testGetBooksReturnsDefensiveCopy(BookListTest.java:106)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+

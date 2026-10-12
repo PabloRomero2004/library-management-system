@@ -1,8 +1,8 @@
 -------------------------------------------------------------------------------
 Test set: model.AuthorTest
 -------------------------------------------------------------------------------
-Tests run: 21, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.258 s <<< FAILURE! -- in model.AuthorTest
-model.AuthorTest.testGetFullName -- Time elapsed: 0.033 s <<< FAILURE!
+Tests run: 21, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.222 s <<< FAILURE! -- in model.AuthorTest
+model.AuthorTest.testGetFullName -- Time elapsed: 0.009 s <<< FAILURE!
 org.opentest4j.AssertionFailedError: expected: <SingleName> but was: <SingleName null>
 	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
 	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)

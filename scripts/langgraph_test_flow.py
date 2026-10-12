@@ -308,8 +308,12 @@ def send_context(state: TestFlowState) -> TestFlowState:
         test_content_text,
         "",
         "Instructions:",
-        "- If a test file already exists, use its content as a base and add the new tests required to validate the recent code changes.",
-        "- If no test file exists, create a complete test file content that covers the new changes.",
+        "- Generate tests to detect defects in the implementation, not to make the test suite pass at all costs. A test failing because the code violates its expected behavior is a valid and desirable result; do not weaken or rewrite assertions to match a known bug in the current implementation.",
+        "- Assert intended behavior based on the code's contract and relevant business rules, rather than treating the current implementation (especially suspicious or defective behavior) as the expected result.",
+        "- You may test business rules, but only call methods and use APIs that are actually defined in the modified file, its dependencies, or the existing test framework. Never invent methods, fields, or interfaces.",
+        "- Aim for 100% branch coverage of the modified code: write tests for every reachable outcome of each conditional, switch, loop, and error-handling branch, including boundary cases.",
+        "- If a test file already exists, use its content as a base and add or correct tests required to detect defects and cover the modified code's branches.",
+        "- If no test file exists, create a complete test file that detects defects and covers the modified code's branches.",
         "- The final result must be only a test file content (with imports and package declarations included) and no extra commentary.",
     ]
         

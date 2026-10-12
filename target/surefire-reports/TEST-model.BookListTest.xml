@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report-3.0.xsd" version="3.0" name="model.BookListTest" time="0.329" tests="41" errors="0" skipped="0" failures="4">
+  <properties>
+    <property name="java.specification.version" value="17"/>
+    <property name="sun.cpu.isalist" value="amd64"/>
+    <property name="sun.jnu.encoding" value="Cp1252"/>
+    <property name="java.class.path" value="C:\Users\pablo\Documents\GitHub\library-management-system\target\test-classes;C:\Users\pablo\Documents\GitHub\library-management-system\target\classes;C:\Users\pablo\.m2\repository\org\junit\jupiter\junit-jupiter\5.10.0\junit-jupiter-5.10.0.jar;C:\Users\pablo\.m2\repository\org\junit\jupiter\junit-jupiter-api\5.10.0\junit-jupiter-api-5.10.0.jar;C:\Users\pablo\.m2\repository\org\opentest4j\opentest4j\1.3.0\opentest4j-1.3.0.jar;C:\Users\pablo\.m2\repository\org\junit\platform\junit-platform-commons\1.10.0\junit-platform-commons-1.10.0.jar;C:\Users\pablo\.m2\repository\org\apiguardian\apiguardian-api\1.1.2\apiguardian-api-1.1.2.jar;C:\Users\pablo\.m2\repository\org\junit\jupiter\junit-jupiter-params\5.10.0\junit-jupiter-params-5.10.0.jar;C:\Users\pablo\.m2\repository\org\junit\jupiter\junit-jupiter-engine\5.10.0\junit-jupiter-engine-5.10.0.jar;C:\Users\pablo\.m2\repository\org\junit\platform\junit-platform-engine\1.10.0\junit-platform-engine-1.10.0.jar;"/>
+    <property name="java.vm.vendor" value="Oracle Corporation"/>
+    <property name="sun.arch.data.model" value="64"/>
+    <property name="user.variant" value=""/>
+    <property name="java.vendor.url" value="https://java.oracle.com/"/>
+    <property name="user.timezone" value="Europe/Madrid"/>
+    <property name="os.name" value="Windows 11"/>
+    <property name="java.vm.specification.version" value="17"/>
+    <property name="sun.java.launcher" value="SUN_STANDARD"/>
+    <property name="user.country" value="ES"/>
+    <property name="sun.boot.library.path" value="C:\Program Files\Java\jdk-17.0.4.1\bin"/>
+    <property name="sun.java.command" value="C:\Users\pablo\AppData\Local\Temp\surefire57093402643974494\surefirebooter-20261012115456686_3.jar C:\Users\pablo\AppData\Local\Temp\surefire57093402643974494 2026-10-12T11-54-56_259-jvmRun1 surefire-20261012115456686_1tmp surefire_0-20261012115456686_2tmp"/>
+    <property name="jdk.debug" value="release"/>
+    <property name="surefire.test.class.path" value="C:\Users\pablo\Documents\GitHub\library-management-system\target\test-classes;C:\Users\pablo\Documents\GitHub\library-management-system\target\classes;C:\Users\pablo\.m2\repository\org\junit\jupiter\junit-jupiter\5.10.0\junit-jupiter-5.10.0.jar;C:\Users\pablo\.m2\repository\org\junit\jupiter\junit-jupiter-api\5.10.0\junit-jupiter-api-5.10.0.jar;C:\Users\pablo\.m2\repository\org\opentest4j\opentest4j\1.3.0\opentest4j-1.3.0.jar;C:\Users\pablo\.m2\repository\org\junit\platform\junit-platform-commons\1.10.0\junit-platform-commons-1.10.0.jar;C:\Users\pablo\.m2\repository\org\apiguardian\apiguardian-api\1.1.2\apiguardian-api-1.1.2.jar;C:\Users\pablo\.m2\repository\org\junit\jupiter\junit-jupiter-params\5.10.0\junit-jupiter-params-5.10.0.jar;C:\Users\pablo\.m2\repository\org\junit\jupiter\junit-jupiter-engine\5.10.0\junit-jupiter-engine-5.10.0.jar;C:\Users\pablo\.m2\repository\org\junit\platform\junit-platform-engine\1.10.0\junit-platform-engine-1.10.0.jar;"/>
+    <property name="sun.cpu.endian" value="little"/>
+    <property name="user.home" value="C:\Users\pablo"/>
+    <property name="user.language" value="es"/>
+    <property name="java.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.version.date" value="2022-08-18"/>
+    <property name="java.home" value="C:\Program Files\Java\jdk-17.0.4.1"/>
+    <property name="file.separator" value="\"/>
+    <property name="basedir" value="C:\Users\pablo\Documents\GitHub\library-management-system"/>
+    <property name="java.vm.compressedOopsMode" value="Zero based"/>
+    <property name="line.separator" value="&#10;"/>
+    <property name="java.vm.specification.vendor" value="Oracle Corporation"/>
+    <property name="java.specification.name" value="Java Platform API Specification"/>
+    <property name="surefire.real.class.path" value="C:\Users\pablo\AppData\Local\Temp\surefire57093402643974494\surefirebooter-20261012115456686_3.jar"/>
+    <property name="user.script" value=""/>
+    <property name="sun.management.compiler" value="HotSpot 64-Bit Tiered Compilers"/>
+    <property name="java.runtime.version" value="17.0.4.1+1-LTS-2"/>
+    <property name="user.name" value="pablo"/>
+    <property name="path.separator" value=";"/>
+    <property name="os.version" value="10.0"/>
+    <property name="java.runtime.name" value="Java(TM) SE Runtime Environment"/>
+    <property name="file.encoding" value="Cp1252"/>
+    <property name="java.vm.name" value="Java HotSpot(TM) 64-Bit Server VM"/>
+    <property name="localRepository" value="C:\Users\pablo\.m2\repository"/>
+    <property name="java.vendor.url.bug" value="https://bugreport.java.com/bugreport/"/>
+    <property name="java.io.tmpdir" value="C:\Users\pablo\AppData\Local\Temp\"/>
+    <property name="java.version" value="17.0.4.1"/>
+    <property name="user.dir" value="C:\Users\pablo\Documents\GitHub\library-management-system"/>
+    <property name="os.arch" value="amd64"/>
+    <property name="java.vm.specification.name" value="Java Virtual Machine Specification"/>
+    <property name="sun.os.patch.level" value=""/>
+    <property name="native.encoding" value="Cp1252"/>
+    <property name="java.library.path" value="C:\Program Files\Java\jdk-17.0.4.1\bin;C:\WINDOWS\Sun\Java\bin;C:\WINDOWS\system32;C:\WINDOWS;c:\Users\pablo\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\debugCommand;c:\Users\pablo\AppData\Roaming\Code\User\globalStorage\github.copilot-chat\copilotCli;C:\Python314\Scripts\;C:\Python314\;C:\Program Files (x86)\VMware\VMware Player\bin\;C:\URV\bmde\msys\bin;C:\URV\bmde\devkitPro\devkitARM\bin;C:\URV\bmde\devkitPro\insight\bin;C:\Program Files\Common Files\Oracle\Java\javapath;C:\Program Files (x86)\Common Files\Oracle\Java\java8path;C:\Program Files (x86)\Common Files\Oracle\Java\javapath;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files\Redis\;C:\Program Files\gnuplot\bin;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\;C:\Program Files\Docker\Docker\resources\bin;C:\Program Files\MATLAB\R2026a\bin;C:\Program Files\apache-maven-3.9.16\bin;C:\php;C:\Program Files\nodejs\;C:\ProgramData\chocolatey\bin;C:\Program Files\Git\cmd;C:\tools\php82;C:\ProgramData\ComposerSetup\bin;C:\Program Files\WSL\;C:\Users\pablo\AppData\Local\Programs\Python\Launcher\;C:\Users\pablo\AppData\Local\Microsoft\WindowsApps;C:\Users\pablo\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\pablo\AppData\Local\GitHubDesktop\bin;C:\msys64\ucrt64\bin;C:\Users\pablo\AppData\Local\Programs\Python\Python313\Scripts;;C:\composer;C:\Users\pablo\AppData\Roaming\npm;C:\Users\pablo\AppData\Roaming\Composer\vendor\bin;c:\Users\pablo\.vscode\extensions\ms-python.debugpy-2026.6.0-win32-x64\bundled\scripts\noConfigScripts;c:\Users\pablo\.vscode\extensions\vscjava.vscode-java-debug-0.59.0\bundled\scripts\noConfigScripts;."/>
+    <property name="java.vm.info" value="mixed mode, sharing"/>
+    <property name="java.vendor" value="Oracle Corporation"/>
+    <property name="java.vm.version" value="17.0.4.1+1-LTS-2"/>
+    <property name="sun.io.unicode.encoding" value="UnicodeLittle"/>
+    <property name="java.class.version" value="61.0"/>
+  </properties>
+  <testcase name="testGetAvailableBooksNoneAvailable" classname="model.BookListTest" time="0.005"/>
+  <testcase name="testIsEmptyWhenEmpty" classname="model.BookListTest" time="0.007">
+    <failure message="isEmpty should return true for an empty list ==&gt; expected: &lt;true&gt; but was: &lt;false&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: isEmpty should return true for an empty list ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:63)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:36)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:210)
+	at model.BookListTest.testIsEmptyWhenEmpty(BookListTest.java:550)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+]]></failure>
+  </testcase>
+  <testcase name="testToStringWithBooks" classname="model.BookListTest" time="0.003"/>
+  <testcase name="testAddBook" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testFindByIdSearchNull" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testFindByIsbnSearchNull" classname="model.BookListTest" time="0.0"/>
+  <testcase name="testConstructorWithInitialList" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testFindByIsbnBookWithNullIsbnInList" classname="model.BookListTest" time="0.033"/>
+  <testcase name="testSizeAfterAddAndRemove" classname="model.BookListTest" time="0.01"/>
+  <testcase name="testSizeWithBooks" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testSetBooksWithEmptyList" classname="model.BookListTest" time="0.004"/>
+  <testcase name="testFindByIsbnExisting" classname="model.BookListTest" time="0.0"/>
+  <testcase name="testFindByIsbnNonExisting" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testRemoveNullBook" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testGetAvailableBooksMixed" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testGetLostBooksNoneLost" classname="model.BookListTest" time="0.005"/>
+  <testcase name="testGetAvailableBooksAllAvailable" classname="model.BookListTest" time="0.005"/>
+  <testcase name="testRemoveNonExistingBook" classname="model.BookListTest" time="0.006"/>
+  <testcase name="testIsEmptyWhenNotEmpty" classname="model.BookListTest" time="0.006">
+    <failure message="isEmpty should return false for a non-empty list ==&gt; expected: &lt;false&gt; but was: &lt;true&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: isEmpty should return false for a non-empty list ==> expected: <false> but was: <true>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertFalse.failNotFalse(AssertFalse.java:63)
+	at org.junit.jupiter.api.AssertFalse.assertFalse(AssertFalse.java:36)
+	at org.junit.jupiter.api.Assertions.assertFalse(Assertions.java:235)
+	at model.BookListTest.testIsEmptyWhenNotEmpty(BookListTest.java:560)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+]]></failure>
+  </testcase>
+  <testcase name="testClearEmptyList" classname="model.BookListTest" time="0.006"/>
+  <testcase name="testGetAvailableBooksEmptyList" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testToStringEmptyList" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testClearNonEmptyList" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testFindByIdEmptyList" classname="model.BookListTest" time="0.011"/>
+  <testcase name="testGetLostBooksEmptyList" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testFindByIdExisting" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testAddNullBook" classname="model.BookListTest" time="0.007"/>
+  <testcase name="testGetLostBooksAllLost" classname="model.BookListTest" time="0.0"/>
+  <testcase name="testSetBooksWithNullList" classname="model.BookListTest" time="0.023"/>
+  <testcase name="testGetLostBooksMixed" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testSizeEmpty" classname="model.BookListTest" time="0.006"/>
+  <testcase name="testConstructorWithNullList" classname="model.BookListTest" time="0.003"/>
+  <testcase name="testRemoveExistingBook" classname="model.BookListTest" time="0.012">
+    <failure message="removeBook should return true if the book was successfully removed ==&gt; expected: &lt;true&gt; but was: &lt;false&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: removeBook should return true if the book was successfully removed ==> expected: <true> but was: <false>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertTrue.failNotTrue(AssertTrue.java:63)
+	at org.junit.jupiter.api.AssertTrue.assertTrue(AssertTrue.java:36)
+	at org.junit.jupiter.api.Assertions.assertTrue(Assertions.java:210)
+	at model.BookListTest.testRemoveExistingBook(BookListTest.java:221)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+]]></failure>
+  </testcase>
+  <testcase name="testGetBooksReturnsDefensiveCopy" classname="model.BookListTest" time="0.003">
+    <failure message="Modifying the list returned by getBooks should not affect the internal list ==&gt; expected: &lt;1&gt; but was: &lt;2&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: Modifying the list returned by getBooks should not affect the internal list ==> expected: <1> but was: <2>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
+	at org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)
+	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)
+	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:559)
+	at model.BookListTest.testGetBooksReturnsDefensiveCopy(BookListTest.java:106)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:568)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1511)
+]]></failure>
+  </testcase>
+  <testcase name="testFindByIdNonExisting" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testConstructorWithEmptyList" classname="model.BookListTest" time="0.004"/>
+  <testcase name="testFindByIsbnEmptyList" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testAddDuplicateBook" classname="model.BookListTest" time="0.003"/>
+  <testcase name="testFindByIdBookWithNullIdInList" classname="model.BookListTest" time="0.002"/>
+  <testcase name="testDefaultConstructor" classname="model.BookListTest" time="0.0"/>
+  <testcase name="testSetBooks" classname="model.BookListTest" time="0.002"/>
+</testsuite>
